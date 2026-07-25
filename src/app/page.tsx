@@ -163,6 +163,12 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
     const el = reactorTiltRef.current;
     if (!el || !window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
 
