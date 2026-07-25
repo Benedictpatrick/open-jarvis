@@ -541,6 +541,9 @@ export default function Home() {
   const [haptics, setHaptics] = useState(true);
   const [voiceName, setVoiceName] = useState<string | null>(null);
   const [installDismissed, setInstallDismissed] = useState(true);
+  // Collapsed by default: the arc is the main component, so only the newest
+  // exchange sits beneath it. The full scrolling history is opt-in.
+  const [historyOpen, setHistoryOpen] = useState(false);
   const { state: installState, install } = useInstallPrompt();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [liveCaption, setLiveCaption] = useState('');
@@ -1257,10 +1260,14 @@ export default function Home() {
 
   const idleHint = wakeWordEnabled ? IDLE_HINT_WAKE : IDLE_HINT_TAP;
 
+  // The newest turn from each side, for the collapsed view.
+  const latestReply = [...messages].reverse().find((m) => m.role === 'assistant' && messageText(m));
+  const latestUser = [...messages].reverse().find((m) => m.role === 'user');
+
   return (
     <div
       ref={stageRef}
-      className={`app-shell phase-${phase} ${messages.length > 0 ? 'has-sheet' : ''} ${booting ? 'is-booting' : ''}`}
+      className={`app-shell phase-${phase} ${messages.length > 0 && historyOpen ? 'has-sheet' : ''} ${booting ? 'is-booting' : ''}`}
     >
       {/* One mesh layer per phase, crossfaded by opacity. Four real layers
           rather than one mutating gradient, so the transition is a true
@@ -1391,11 +1398,24 @@ export default function Home() {
           <span>GPT-OSS-120B</span>
         </div>
 
-        {/* Frosted sheet: the conversation rises over the stage rather than
-            displacing it, so the reactor keeps its full scale and stays
-            visible glowing behind the text. */}
-        {messages.length > 0 && (
+        {/* Collapsed view: only the newest exchange, sized to its content, so
+            the reactor keeps the screen. The scrim is light enough that the
+            arc reads plainly through the words. */}
+        {messages.length > 0 && !historyOpen && (
+          <div className="latest-exchange">
+            {latestUser && <p className="latest-user">{messageText(latestUser)}</p>}
+            {latestReply && <p className="latest-reply">{messageText(latestReply)}</p>}
+            <button type="button" className="history-toggle" onClick={() => setHistoryOpen(true)}>
+              ⌃ history
+            </button>
+          </div>
+        )}
+
+        {messages.length > 0 && historyOpen && (
           <section ref={transcriptRef} className="transcript-sheet">
+            <button type="button" className="history-toggle is-open" onClick={() => setHistoryOpen(false)}>
+              ⌄ close history
+            </button>
             {messages.map((message) => {
               const isUser = message.role === 'user';
               return (

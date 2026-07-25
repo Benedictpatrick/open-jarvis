@@ -921,6 +921,66 @@ body {
   border-radius: 9999px;
 }
 
+/* Collapsed conversation view. Sized to its own content instead of claiming a
+   fixed band, so the reactor above it keeps the screen. The scrim is
+   deliberately light — the arc should read plainly through the words. */
+.latest-exchange {
+  position: relative;
+  z-index: 3;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px max(24px, calc((100% - 640px) / 2)) 6px;
+  text-align: center;
+  background: linear-gradient(180deg, rgba(10, 10, 10, 0) 0%, rgba(10, 10, 10, 0.42) 45%, rgba(10, 10, 10, 0.5) 100%);
+  animation: sheet-in 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.latest-user {
+  font-size: 13px;
+  line-height: 18px;
+  color: rgba(255, 255, 255, 0.5);
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.latest-reply {
+  font-size: 16px;
+  line-height: 23px;
+  color: #ffffff;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.85);
+  /* Three lines is enough to read a spoken reply at a glance; the rest is in
+     the history. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.history-toggle {
+  margin-top: 2px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-family: var(--font-mono), monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.45);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.history-toggle:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.08);
+}
+.history-toggle.is-open {
+  align-self: center;
+  margin-bottom: 4px;
+}
+
 .sheet-eyebrow {
   font-family: var(--font-mono), monospace;
   font-size: 11px;
