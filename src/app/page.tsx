@@ -291,6 +291,9 @@ const FATAL_RECOGNITION_ERRORS = new Set(['not-allowed', 'service-not-allowed', 
 // Recognition ends on its own constantly (every pause in speech), so a plain
 // end is not a failure and restarts promptly. Anything else backs off.
 const BENIGN_RECOGNITION_ERRORS = new Set(['no-speech', 'aborted']);
+// Fallback if the recogniser's 'end' never arrives — the handoff must not
+// stall forever waiting for an event some platform declines to fire.
+const MIC_HANDOFF_TIMEOUT_MS = 700;
 const RECOGNITION_RESTART_MS = 250;
 const RECOGNITION_BACKOFF_BASE_MS = 400;
 const RECOGNITION_BACKOFF_MAX_MS = 10000;
@@ -1067,12 +1070,26 @@ export default function Home() {
           // Prevent the auto-restart from racing the handoff to the command
           // recorder below — this stop is intentional, not a drop.
           done = true;
-          recognition.stop();
           setWakeWordHeard('');
           // Confirm it heard you before anything else happens.
           vibrate(HAPTICS.wakeWord);
           setStatusText('Wake word detected…');
-          void startRecording(true);
+
+          // Hand the microphone over properly rather than grabbing it. On
+          // Android, recognition runs in Google's speech service, which holds
+          // the mic until it has actually finished — calling getUserMedia
+          // straight away races that release and produces "cannot record now
+          // as Chrome is recording", losing the command. Waiting for 'end'
+          // costs nothing on desktop, where it fires immediately.
+          let handedOff = false;
+          const handOff = () => {
+            if (handedOff) return;
+            handedOff = true;
+            void startRecording(true);
+          };
+          recognition.addEventListener('end', handOff, { once: true });
+          setTimeout(handOff, MIC_HANDOFF_TIMEOUT_MS);
+          recognition.stop();
           return;
         }
       }
