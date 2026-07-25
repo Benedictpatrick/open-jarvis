@@ -1237,6 +1237,17 @@ body {
   border-bottom: none;
 }
 
+.settings-row-hint {
+  display: block;
+  margin-top: 6px;
+  max-width: 30ch;
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0;
+  color: #f9cb28;
+  opacity: 0.85;
+}
+
 .settings-row-note {
   display: block;
   margin-top: 2px;

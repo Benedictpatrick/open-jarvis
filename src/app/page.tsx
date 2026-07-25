@@ -243,6 +243,17 @@ export function activeVoiceName(): string | null {
   return pickJarvisVoice()?.name ?? null;
 }
 
+/** True when the device offers nothing suitable — no explicit choice, no
+ * recognised voice, and nothing male-sounding. Windows names its male voices
+ * "Ryan" and "Thomas" rather than "Male", so a plain name test would wrongly
+ * flag a perfectly good setup; this reuses the same rule the picker does. */
+export function needsBetterVoice(): boolean {
+  if (!hasSpeechSynthesis()) return false;
+  const voices = window.speechSynthesis.getVoices();
+  if (voices.length === 0) return false;
+  return !hasGoodVoice(voices);
+}
+
 function pickJarvisVoice(): SpeechSynthesisVoice | null {
   const voices = window.speechSynthesis.getVoices();
   if (!voices.length) return null;
@@ -1301,6 +1312,7 @@ export default function Home() {
           onChooseVoice={chooseVoice}
           listVoices={englishVoices}
           activeVoice={activeVoiceName}
+          needsBetterVoice={needsBetterVoice}
           installState={installState}
           onInstall={() => void install()}
           legacyFacts={session?.legacyFacts ?? 0}

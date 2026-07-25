@@ -50,6 +50,7 @@ export function SettingsPanel({
   onChooseVoice,
   listVoices,
   activeVoice,
+  needsBetterVoice,
   installState,
   onInstall,
   legacyFacts,
@@ -71,6 +72,7 @@ export function SettingsPanel({
   onChooseVoice: (name: string | null) => void;
   listVoices: () => SpeechSynthesisVoice[];
   activeVoice: () => string | null;
+  needsBetterVoice: () => boolean;
   installState: InstallState;
   onInstall: () => void;
   legacyFacts: number;
@@ -84,6 +86,7 @@ export function SettingsPanel({
   const [importing, setImporting] = useState(false);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [active, setActive] = useState<string | null>(null);
+  const [lacksGoodVoice, setLacksGoodVoice] = useState(false);
 
   // Voices arrive asynchronously and, on Android, often in stages — the first
   // list can be a partial one. Poll briefly as well as listening, so the panel
@@ -92,6 +95,7 @@ export function SettingsPanel({
     const load = () => {
       setVoices(listVoices());
       setActive(activeVoice());
+      setLacksGoodVoice(needsBetterVoice());
     };
     load();
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
@@ -104,7 +108,7 @@ export function SettingsPanel({
       window.speechSynthesis.removeEventListener('voiceschanged', load);
       clearInterval(poll);
     };
-  }, [listVoices, activeVoice]);
+  }, [listVoices, activeVoice, needsBetterVoice]);
 
   useEffect(() => {
     let cancelled = false;
@@ -191,6 +195,15 @@ export function SettingsPanel({
                   ? 'No voices reported by this device'
                   : `Using: ${active ?? 'device default'} · ${voices.length} available`}
               </span>
+              {/* A device can simply have no male voice installed, which no
+                  amount of picking can work around — so say where to get one
+                  rather than silently sounding wrong. */}
+              {voices.length > 0 && lacksGoodVoice && (
+                <span className="settings-row-hint">
+                  No male voice installed. On Android: Settings → System → Languages &amp; input →
+                  Text-to-speech output → Google TTS → Install voice data.
+                </span>
+              )}
             </span>
             {voices.length > 0 ? (
               <select
