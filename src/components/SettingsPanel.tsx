@@ -38,6 +38,9 @@ export function SettingsPanel({
   onToggleContinuous,
   haptics,
   onToggleHaptics,
+  voiceName,
+  onChooseVoice,
+  listVoices,
   legacyFacts,
   onImportLegacy,
   hasMessages,
@@ -52,7 +55,10 @@ export function SettingsPanel({
   continuous: boolean;
   onToggleContinuous: () => void;
   haptics: boolean;
-  onToggleHaptics: () => void;
+  onToggleHaptics: (() => void);
+  voiceName: string | null;
+  onChooseVoice: (name: string | null) => void;
+  listVoices: () => SpeechSynthesisVoice[];
   legacyFacts: number;
   onImportLegacy: () => void | Promise<void>;
   hasMessages: boolean;
@@ -62,6 +68,17 @@ export function SettingsPanel({
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+
+  // Voices arrive asynchronously and, on Android, often after first paint —
+  // so listen as well as read.
+  useEffect(() => {
+    const load = () => setVoices(listVoices());
+    load();
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    window.speechSynthesis.addEventListener('voiceschanged', load);
+    return () => window.speechSynthesis.removeEventListener('voiceschanged', load);
+  }, [listVoices]);
 
   useEffect(() => {
     let cancelled = false;
@@ -138,6 +155,29 @@ export function SettingsPanel({
               {continuous ? 'On' : 'Off'}
             </button>
           </div>
+          {voices.length > 0 && (
+            <div className="settings-row">
+              <span>
+                Voice
+                <span className="settings-row-note">
+                  {voiceName ?? 'Chosen automatically'}
+                </span>
+              </span>
+              <select
+                className="settings-select"
+                value={voiceName ?? ''}
+                onChange={(e) => onChooseVoice(e.target.value || null)}
+                aria-label="Speech voice"
+              >
+                <option value="">Auto</option>
+                {voices.map((voice) => (
+                  <option key={voice.name} value={voice.name}>
+                    {voice.name.replace(/ - English.*$/, '')} ({voice.lang})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="settings-row">
             <span>
               Haptics

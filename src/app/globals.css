@@ -1155,6 +1155,23 @@ body {
   color: var(--band);
 }
 
+.settings-select {
+  max-width: 46%;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--band-hairline);
+  cursor: pointer;
+}
+.settings-select option {
+  background: #1c1c1c;
+  color: #ffffff;
+}
+
 .settings-toggle-disabled {
   font-family: var(--font-mono), monospace;
   font-size: 12px;

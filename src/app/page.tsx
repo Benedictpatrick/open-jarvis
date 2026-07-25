@@ -128,19 +128,56 @@ const GROQ_VOICE_STORAGE_KEY = 'jarvis:groq-voice';
 // free, unlimited and needs no key — Edge in particular exposes Microsoft's
 // neural voices through it. Ordered best-first; the first one present wins.
 const PREFERRED_VOICES = [
+  // Edge / Windows neural voices
   'Microsoft Ryan Online (Natural)',
   'Microsoft Thomas Online (Natural)',
   'Microsoft Oliver Online (Natural)',
   'Microsoft Brian Multilingual Online (Natural)',
   'Microsoft Andrew Multilingual Online (Natural)',
+  // Android — the names Chrome exposes there
   'Google UK English Male',
+  'Google US English Male',
+  // iOS / macOS
   'Daniel',
+  'Arthur',
+  'Oliver',
 ];
+
+const VOICE_STORAGE_KEY = 'jarvis:voice';
+
+/** Chosen in Settings. Device voice sets vary far too much to guess from a
+ * name list alone, so an explicit pick always wins. */
+let preferredVoiceName: string | null = null;
+
+function setPreferredVoice(name: string | null): void {
+  preferredVoiceName = name;
+}
+
+function isFemaleNamed(voice: SpeechSynthesisVoice): boolean {
+  return /female|woman/i.test(voice.name);
+}
+
+function isMaleNamed(voice: SpeechSynthesisVoice): boolean {
+  return /\bmale\b|\bman\b/i.test(voice.name) && !isFemaleNamed(voice);
+}
+
+export function englishVoices(): SpeechSynthesisVoice[] {
+  if (!hasSpeechSynthesis()) return [];
+  return window.speechSynthesis.getVoices().filter((voice) => voice.lang.startsWith('en'));
+}
 
 // Chromium silently truncates a single utterance after roughly 15 seconds.
 // Splitting on sentence boundaries keeps every chunk well under that, and
 // reads with more natural phrasing anyway.
 const SPEECH_CHUNK_CHARS = 180;
+
+/** Whether speech recognition and an open MediaRecorder can share the mic.
+ * Desktop copes; Android does not, because recognition there is a separate
+ * system service competing for the same device. */
+function supportsConcurrentMic(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return navigator.maxTouchPoints === 0;
+}
 
 function hasSpeechSynthesis(): boolean {
   return typeof window !== 'undefined' && 'speechSynthesis' in window;
@@ -150,32 +187,54 @@ function hasSpeechSynthesis(): boolean {
  * routinely returns an empty list. */
 function whenVoicesReady(): Promise<void> {
   return new Promise((resolve) => {
-    if (!hasSpeechSynthesis() || window.speechSynthesis.getVoices().length > 0) return resolve();
-    const timer = setTimeout(resolve, 1500);
-    window.speechSynthesis.addEventListener(
-      'voiceschanged',
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
+    if (!hasSpeechSynthesis()) return resolve();
+    if (window.speechSynthesis.getVoices().length > 0) return resolve();
+
+    // Android fires 'voiceschanged' late, and sometimes not at all, so poll as
+    // well as listen. The old version simply resolved after a fixed wait — on a
+    // phone the list was usually still empty by then, no voice got assigned,
+    // and Android fell back to its default, which is why Jarvis sounded female.
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearInterval(poll);
+      clearTimeout(cap);
+      resolve();
+    };
+    const poll = setInterval(() => {
+      if (window.speechSynthesis.getVoices().length > 0) finish();
+    }, 120);
+    const cap = setTimeout(finish, 4000);
+    window.speechSynthesis.addEventListener('voiceschanged', finish, { once: true });
   });
 }
 
 function pickJarvisVoice(): SpeechSynthesisVoice | null {
   const voices = window.speechSynthesis.getVoices();
   if (!voices.length) return null;
+
+  if (preferredVoiceName) {
+    const chosen = voices.find((voice) => voice.name === preferredVoiceName);
+    if (chosen) return chosen;
+  }
+
   for (const name of PREFERRED_VOICES) {
     const match = voices.find((voice) => voice.name.startsWith(name));
     if (match) return match;
   }
-  // None of the named voices exist on this platform — fall back by character:
-  // a British neural voice, then any British one, then any English at all.
+
+  // Nothing recognised by name. Fall back by character rather than taking
+  // whatever happens to be first, which is how a female voice slipped through.
+  const en = voices.filter((voice) => voice.lang.startsWith('en'));
+  const gb = en.filter((voice) => voice.lang === 'en-GB');
   return (
-    voices.find((voice) => voice.lang === 'en-GB' && /natural|neural/i.test(voice.name)) ??
-    voices.find((voice) => voice.lang === 'en-GB') ??
-    voices.find((voice) => voice.lang.startsWith('en')) ??
+    gb.find(isMaleNamed) ??
+    en.find(isMaleNamed) ??
+    gb.find((voice) => !isFemaleNamed(voice)) ??
+    en.find((voice) => !isFemaleNamed(voice)) ??
+    gb[0] ??
+    en[0] ??
     voices[0] ??
     null
   );
@@ -445,6 +504,7 @@ export default function Home() {
   const [useGroqVoice, setUseGroqVoice] = useState(false);
   const [continuous, setContinuous] = useState(true);
   const [haptics, setHaptics] = useState(true);
+  const [voiceName, setVoiceName] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [liveCaption, setLiveCaption] = useState('');
   const [wakeWordHeard, setWakeWordHeard] = useState('');
@@ -490,12 +550,33 @@ export default function Home() {
       if (localStorage.getItem(WAKE_WORD_STORAGE_KEY) !== 'off') setWakeWordEnabled(true);
       if (localStorage.getItem(GROQ_VOICE_STORAGE_KEY) === 'on') setUseGroqVoice(true);
       if (localStorage.getItem(CONTINUOUS_STORAGE_KEY) === 'off') setContinuous(false);
+      const storedVoice = localStorage.getItem(VOICE_STORAGE_KEY);
+      if (storedVoice) {
+        setVoiceName(storedVoice);
+        setPreferredVoice(storedVoice);
+      }
       if (localStorage.getItem(HAPTICS_STORAGE_KEY) === 'off') {
         setHaptics(false);
         setHapticsEnabled(false);
       }
     } catch {
       // private mode / storage disabled — just leave it off
+    }
+  }, []);
+
+  const chooseVoice = useCallback((name: string | null) => {
+    setVoiceName(name);
+    setPreferredVoice(name);
+    try {
+      if (name) localStorage.setItem(VOICE_STORAGE_KEY, name);
+      else localStorage.removeItem(VOICE_STORAGE_KEY);
+    } catch {
+      // ignore — the choice still applies for this session
+    }
+    // Say something immediately so the choice can be judged by ear.
+    if (hasSpeechSynthesis()) {
+      window.speechSynthesis.cancel();
+      speakWithBrowser('Voice set, sir.', () => {});
     }
   }, []);
 
@@ -910,7 +991,14 @@ export default function Home() {
         // hearing in real time instead of a silent "recording" state. The
         // real transcript (with translation) still comes from Groq Whisper
         // on the recorded audio once you stop — this is just for feedback.
-        const CaptionCtor = getSpeechRecognitionCtor();
+        //
+        // Skipped on phones. Android routes SpeechRecognition through Google's
+        // speech service, which demands the microphone exclusively — running it
+        // while MediaRecorder holds the mic makes Android pop up "Speech
+        // recognition and synthesis from Google cannot record now as Chrome is
+        // recording" and can cost us the recording itself. A cosmetic caption is
+        // never worth losing the actual command.
+        const CaptionCtor = supportsConcurrentMic() ? getSpeechRecognitionCtor() : null;
         if (CaptionCtor) {
           const captionRecognition = new CaptionCtor();
           captionRecognition.continuous = true;
@@ -1135,6 +1223,9 @@ export default function Home() {
           onToggleContinuous={toggleContinuous}
           haptics={haptics}
           onToggleHaptics={toggleHaptics}
+          voiceName={voiceName}
+          onChooseVoice={chooseVoice}
+          listVoices={englishVoices}
           legacyFacts={session?.legacyFacts ?? 0}
           onImportLegacy={async () => {
             const res = await fetch('/api/session', { method: 'POST' });
