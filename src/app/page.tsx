@@ -189,16 +189,27 @@ function hasSpeechSynthesis(): boolean {
 
 /** Voices load asynchronously in most browsers — the first getVoices() call
  * routinely returns an empty list. */
+/** True once the list contains something worth speaking with, rather than
+ * merely containing anything at all. */
+function hasGoodVoice(voices: SpeechSynthesisVoice[]): boolean {
+  if (preferredVoiceName && voices.some((v) => v.name === preferredVoiceName)) return true;
+  if (voices.some((v) => PREFERRED_VOICES.some((name) => v.name.startsWith(name)))) return true;
+  return voices.some((v) => v.lang.startsWith('en') && isMaleNamed(v));
+}
+
 function whenVoicesReady(): Promise<void> {
   return new Promise((resolve) => {
     if (!hasSpeechSynthesis()) return resolve();
-    if (window.speechSynthesis.getVoices().length > 0) return resolve();
+    if (hasGoodVoice(window.speechSynthesis.getVoices())) return resolve();
 
-    // Android fires 'voiceschanged' late, and sometimes not at all, so poll as
-    // well as listen. The old version simply resolved after a fixed wait — on a
-    // phone the list was usually still empty by then, no voice got assigned,
-    // and Android fell back to its default, which is why Jarvis sounded female.
+    // Waiting for "any voice at all" was the bug: Android hands back a partial
+    // list first — often just a default female voice — and fills in the rest a
+    // moment later. Resolving on that first list meant picking from it and
+    // never looking again. So keep waiting until a voice actually worth using
+    // appears, or until the list stops growing, or until the cap.
     let settled = false;
+    let lastCount = -1;
+    let stableTicks = 0;
     const finish = () => {
       if (settled) return;
       settled = true;
@@ -207,11 +218,29 @@ function whenVoicesReady(): Promise<void> {
       resolve();
     };
     const poll = setInterval(() => {
-      if (window.speechSynthesis.getVoices().length > 0) finish();
+      const voices = window.speechSynthesis.getVoices();
+      if (hasGoodVoice(voices)) return finish();
+      // No preferred voice on this device — settle once the list has stopped
+      // changing, so the fallback at least chooses from the complete set.
+      if (voices.length > 0 && voices.length === lastCount) {
+        if (++stableTicks >= 4) return finish();
+      } else {
+        stableTicks = 0;
+      }
+      lastCount = voices.length;
     }, 120);
-    const cap = setTimeout(finish, 4000);
-    window.speechSynthesis.addEventListener('voiceschanged', finish, { once: true });
+    const cap = setTimeout(finish, 5000);
+    window.speechSynthesis.addEventListener('voiceschanged', () => {
+      if (hasGoodVoice(window.speechSynthesis.getVoices())) finish();
+    });
   });
+}
+
+/** What the app would actually speak with right now — surfaced in Settings so
+ * a device that behaves unexpectedly can be diagnosed without a debugger. */
+export function activeVoiceName(): string | null {
+  if (!hasSpeechSynthesis()) return null;
+  return pickJarvisVoice()?.name ?? null;
 }
 
 function pickJarvisVoice(): SpeechSynthesisVoice | null {
@@ -1264,6 +1293,7 @@ export default function Home() {
           voiceName={voiceName}
           onChooseVoice={chooseVoice}
           listVoices={englishVoices}
+          activeVoice={activeVoiceName}
           installState={installState}
           onInstall={() => void install()}
           legacyFacts={session?.legacyFacts ?? 0}

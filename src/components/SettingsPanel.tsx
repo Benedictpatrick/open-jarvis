@@ -49,6 +49,7 @@ export function SettingsPanel({
   voiceName,
   onChooseVoice,
   listVoices,
+  activeVoice,
   installState,
   onInstall,
   legacyFacts,
@@ -69,6 +70,7 @@ export function SettingsPanel({
   voiceName: string | null;
   onChooseVoice: (name: string | null) => void;
   listVoices: () => SpeechSynthesisVoice[];
+  activeVoice: () => string | null;
   installState: InstallState;
   onInstall: () => void;
   legacyFacts: number;
@@ -81,16 +83,28 @@ export function SettingsPanel({
   const [loadError, setLoadError] = useState(false);
   const [importing, setImporting] = useState(false);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [active, setActive] = useState<string | null>(null);
 
-  // Voices arrive asynchronously and, on Android, often after first paint —
-  // so listen as well as read.
+  // Voices arrive asynchronously and, on Android, often in stages — the first
+  // list can be a partial one. Poll briefly as well as listening, so the panel
+  // reflects the final set rather than the first glimpse of it.
   useEffect(() => {
-    const load = () => setVoices(listVoices());
+    const load = () => {
+      setVoices(listVoices());
+      setActive(activeVoice());
+    };
     load();
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
     window.speechSynthesis.addEventListener('voiceschanged', load);
-    return () => window.speechSynthesis.removeEventListener('voiceschanged', load);
-  }, [listVoices]);
+    // Keep refreshing for as long as the panel is open. Voices can appear
+    // several seconds in — an earlier version stopped polling after five and
+    // therefore reported a voice the app had already stopped using.
+    const poll = setInterval(load, 1000);
+    return () => {
+      window.speechSynthesis.removeEventListener('voiceschanged', load);
+      clearInterval(poll);
+    };
+  }, [listVoices, activeVoice]);
 
   useEffect(() => {
     let cancelled = false;
@@ -167,14 +181,18 @@ export function SettingsPanel({
               {continuous ? 'On' : 'Off'}
             </button>
           </div>
-          {voices.length > 0 && (
-            <div className="settings-row">
-              <span>
-                Voice
-                <span className="settings-row-note">
-                  {voiceName ?? 'Chosen automatically'}
-                </span>
+          {/* Always rendered, even with no voices — an empty list is itself the
+              answer when speech misbehaves on a device we can't debug. */}
+          <div className="settings-row">
+            <span>
+              Voice
+              <span className="settings-row-note">
+                {voices.length === 0
+                  ? 'No voices reported by this device'
+                  : `Using: ${active ?? 'device default'} · ${voices.length} available`}
               </span>
+            </span>
+            {voices.length > 0 ? (
               <select
                 className="settings-select"
                 value={voiceName ?? ''}
@@ -188,8 +206,10 @@ export function SettingsPanel({
                   </option>
                 ))}
               </select>
-            </div>
-          )}
+            ) : (
+              <span className="settings-toggle-disabled">none</span>
+            )}
+          </div>
           <div className="settings-row">
             <span>
               Haptics
