@@ -8,6 +8,7 @@ import { InfoPanel } from '@/components/InfoPanel';
 import { SettingsPanel } from '@/components/SettingsPanel';
 import { HAPTICS, setHapticsEnabled, vibrate } from '@/lib/haptics';
 import { InstallPrompt } from '@/components/InstallPrompt';
+import { Clock } from '@/components/Clock';
 import { useInstallPrompt } from '@/lib/use-install-prompt';
 
 const INFO_PANEL_AUTO_DISMISS_MS = 15000;
@@ -504,7 +505,6 @@ export default function Home() {
   // passively listening when it isn't.
   const [statusText, setStatusText] = useState('');
   const [textInput, setTextInput] = useState('');
-  const [clock, setClock] = useState('');
   const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
   const [wakeWordSupported, setWakeWordSupported] = useState(true);
   const [useGroqVoice, setUseGroqVoice] = useState(false);
@@ -653,6 +653,20 @@ export default function Home() {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});
     }
+  }, []);
+
+  // Stop animating while backgrounded. CSS animations keep running when a tab
+  // is hidden, which on an installed PWA means burning battery in a pocket for
+  // pixels nobody is looking at. Toggling a class costs one paint; it does not
+  // re-render React.
+  useEffect(() => {
+    const sync = () => document.body.classList.toggle('app-hidden', document.hidden);
+    sync();
+    document.addEventListener('visibilitychange', sync);
+    return () => {
+      document.removeEventListener('visibilitychange', sync);
+      document.body.classList.remove('app-hidden');
+    };
   }, []);
 
   // Boot sequence. It also covers the session fetch, so the greeting is ready
@@ -881,16 +895,6 @@ export default function Home() {
     thinking: 'BUSY',
     speaking: 'TX',
   };
-
-  useEffect(() => {
-    const update = () =>
-      setClock(
-        new Date().toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-      );
-    update();
-    const id = setInterval(update, 1000);
-    return () => clearInterval(id);
-  }, []);
 
   const stopRecording = useCallback((discard = false) => {
     // A discarded stop means nothing was said — skip transcription entirely
@@ -1282,7 +1286,7 @@ export default function Home() {
       <header className="chrome-top">
         <span className="nav-brand">Jarvis</span>
         <div className="flex items-center gap-3">
-          <span className="chrome-clock hidden sm:inline">{clock}</span>
+          <Clock className="chrome-clock hidden sm:inline" />
           <button type="button" onClick={() => setSettingsOpen(true)} className="nav-btn nav-btn-ghost">
             Settings
           </button>

@@ -156,6 +156,70 @@ body {
   opacity: 0.62;
 }
 
+/* ── Phone budget ───────────────────────────────────────────────
+   A phone GPU cannot afford what a laptop shrugs off. The costs here, in
+   order: four full-screen 56px blurs compositing every frame even though
+   three are invisible; SVG feGaussianBlur on animated elements; and
+   backdrop-filter over large surfaces. Each is cut to what still reads
+   correctly rather than removed wholesale. */
+@media (hover: none) and (pointer: coarse) {
+  /* Only the active layer is rendered at all. The other three were being
+     blurred and composited behind an opacity of zero. Crossfade is traded
+     for a straight swap — barely perceptible, and it is three quarters of
+     this effect's cost. */
+  .mesh {
+    display: none;
+    /* The radial gradients already fade to transparent, so most of the blur
+       was redundant softening of something soft. */
+    filter: blur(28px);
+    animation: none;
+  }
+  .phase-idle .mesh-idle,
+  .phase-listening .mesh-listening,
+  .phase-thinking .mesh-thinking,
+  .phase-speaking .mesh-speaking {
+    display: block;
+  }
+
+  /* The glow filters are the single most expensive thing in the reactor:
+     feGaussianBlur re-rasterises on every animated frame. The drop-shadow on
+     the SVG as a whole survives and carries the same impression for one
+     composited pass instead of seven. */
+  .reactor-svg .core-ring,
+  .reactor-svg .core-triangle,
+  .reactor-svg .core-badge,
+  .reactor-svg .scanner,
+  .reactor-svg .outer-dash circle,
+  .reactor-svg .dash-mid circle {
+    filter: none;
+  }
+  .reactor-svg .core-bloom {
+    display: none;
+  }
+
+  /* Backdrop blur over a large surface is expensive; these two are the
+     biggest. Opaque backgrounds read almost identically against the dark
+     field. */
+  .transcript-sheet {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: linear-gradient(180deg, rgba(10, 10, 10, 0.86) 0%, rgba(10, 10, 10, 0.96) 100%);
+  }
+  .settings-panel {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: #1c1c1c;
+  }
+}
+
+/* Nothing on screen is worth animating while the app is in the background —
+   this is a PWA that may sit open in a pocket all day. */
+.app-hidden .mesh,
+.app-hidden .reactor-svg *,
+.app-hidden .reactor-svg {
+  animation-play-state: paused !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .mesh {
     animation: none;
