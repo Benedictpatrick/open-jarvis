@@ -10,7 +10,12 @@ import { SettingsPanel } from '@/components/SettingsPanel';
 const INFO_PANEL_AUTO_DISMISS_MS = 15000;
 
 const AUTO_SCROLL_THRESHOLD_PX = 80;
-const WAKE_PHRASES = ['hey jarvis', 'hello jarvis', 'wake up daddys home'];
+// Common ways speech recognition mishears "Jarvis" — checked as exact
+// alternatives before falling back to fuzzy matching, since a recognizer
+// confidently transcribing "travis" is a very different signal than a
+// near-miss spelling.
+const JARVIS_MISHEARINGS = ['jarvis', 'jarviss', 'jervis', 'travis', 'garvis', 'charvis', 'jarbis', 'jarvest'];
+const DADDYS_HOME_PHRASES = ['daddys home', 'daddy home', 'daddys back'];
 const SILENCE_THRESHOLD = 12;
 const SILENCE_HOLD_MS = 1300;
 const MAX_AUTO_RECORDING_MS = 15000;
@@ -30,7 +35,7 @@ interface MinimalSpeechRecognition extends EventTarget {
 
 interface SpeechRecognitionResultEvent {
   resultIndex: number;
-  results: ArrayLike<ArrayLike<{ transcript: string }>>;
+  results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }>;
 }
 
 interface SpeechRecognitionErrorEvent {
@@ -45,9 +50,35 @@ function getSpeechRecognitionCtor(): (new () => MinimalSpeechRecognition) | null
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
 }
 
+function levenshtein(a: string, b: string): number {
+  const dp: number[][] = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i++) dp[i][0] = i;
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] =
+        a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[a.length][b.length];
+}
+
+// Deliberately loose: just hearing something close to "Jarvis" anywhere is
+// enough to trigger, without requiring "hey"/"hello" first. Speech
+// recognition often garbles multi-word phrases worse than single names, and
+// for a personal wake word, missing a real activation is worse than an
+// occasional false one.
 function containsWakePhrase(transcript: string): boolean {
   const normalized = transcript.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-  return WAKE_PHRASES.some((phrase) => normalized.includes(phrase));
+  if (!normalized) return false;
+  if (DADDYS_HOME_PHRASES.some((phrase) => normalized.includes(phrase))) return true;
+
+  const words = normalized.split(' ');
+  return words.some((word) => {
+    if (word.length < 4) return false;
+    if (JARVIS_MISHEARINGS.includes(word)) return true;
+    return levenshtein(word, 'jarvis') <= 2;
+  });
 }
 
 /** Monitors a mic stream's volume and calls onSilence after speech is
@@ -140,13 +171,15 @@ export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [statusText, setStatusText] = useState(
-    'Say something in any language, or press and hold the core to talk.',
+    'Say something in any language, or tap the core to talk.',
   );
   const [textInput, setTextInput] = useState('');
   const [clock, setClock] = useState('');
   const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
   const [wakeWordSupported, setWakeWordSupported] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [liveCaption, setLiveCaption] = useState('');
+  const [wakeWordHeard, setWakeWordHeard] = useState('');
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -156,6 +189,7 @@ export default function Home() {
   const reactorTiltRef = useRef<HTMLDivElement | null>(null);
   const silenceCleanupRef = useRef<(() => void) | null>(null);
   const recognitionRef = useRef<MinimalSpeechRecognition | null>(null);
+  const captionRecognitionRef = useRef<MinimalSpeechRecognition | null>(null);
   const currentAudioUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -301,6 +335,14 @@ export default function Home() {
   const stopRecording = useCallback(() => {
     silenceCleanupRef.current?.();
     silenceCleanupRef.current = null;
+    if (captionRecognitionRef.current) {
+      captionRecognitionRef.current.onresult = null;
+      captionRecognitionRef.current.onerror = null;
+      captionRecognitionRef.current.onend = null;
+      captionRecognitionRef.current.stop();
+      captionRecognitionRef.current = null;
+    }
+    setLiveCaption('');
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
     }
@@ -332,7 +374,7 @@ export default function Home() {
           stream.getTracks().forEach((track) => track.stop());
           const blob = new Blob(chunksRef.current, { type: recorder.mimeType });
           if (blob.size < 500) {
-            setStatusText("Didn't catch that. Try holding the core a little longer.");
+            setStatusText("Didn't catch that. Try again, a little closer to the mic.");
             return;
           }
           setStatusText('Transcribing…');
@@ -357,9 +399,37 @@ export default function Home() {
         recorder.start();
         setIsRecording(true);
         setStatusText('Listening…');
+        setLiveCaption('');
 
         if (auto) {
           silenceCleanupRef.current = watchForSilence(stream, () => stopRecording());
+        }
+
+        // Live captions: a second, purely visual speech-recognition stream
+        // running alongside the actual recording, so you see what it's
+        // hearing in real time instead of a silent "recording" state. The
+        // real transcript (with translation) still comes from Groq Whisper
+        // on the recorded audio once you stop — this is just for feedback.
+        const CaptionCtor = getSpeechRecognitionCtor();
+        if (CaptionCtor) {
+          const captionRecognition = new CaptionCtor();
+          captionRecognition.continuous = true;
+          captionRecognition.interimResults = true;
+          captionRecognition.lang = 'en-US';
+          captionRecognition.onresult = (event) => {
+            let text = '';
+            for (let i = 0; i < event.results.length; i++) {
+              text += event.results[i][0]?.transcript ?? '';
+            }
+            setLiveCaption(text.trim());
+          };
+          captionRecognition.onerror = () => {};
+          captionRecognitionRef.current = captionRecognition;
+          try {
+            captionRecognition.start();
+          } catch {
+            // ignore — live captions are a nice-to-have, not required
+          }
         }
       } catch (err) {
         console.error(err);
@@ -395,11 +465,13 @@ export default function Home() {
     recognition.onresult = (event) => {
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const transcript = event.results[i][0]?.transcript ?? '';
+        setWakeWordHeard(transcript);
         if (containsWakePhrase(transcript)) {
           // Prevent the onend auto-restart from racing the handoff to the
           // command recorder below — this stop is intentional, not a drop.
           recognition.onend = null;
           recognition.stop();
+          setWakeWordHeard('');
           setStatusText('Wake word detected…');
           void startRecording(true);
           return;
@@ -413,6 +485,7 @@ export default function Home() {
       }
     };
     recognition.onend = () => {
+      setWakeWordHeard('');
       try {
         recognition.start();
       } catch {
@@ -432,6 +505,7 @@ export default function Home() {
       recognition.onerror = null;
       recognition.onend = null;
       recognition.stop();
+      setWakeWordHeard('');
     };
   }, [wakeWordEnabled, phase, startRecording]);
 
@@ -442,22 +516,18 @@ export default function Home() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space' && !isTypingTarget(e.target) && !e.repeat) {
         e.preventDefault();
-        void startRecording();
-      }
-    };
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && !isTypingTarget(e.target)) {
-        e.preventDefault();
-        stopRecording();
+        if (isRecording) {
+          stopRecording();
+        } else {
+          void startRecording(true);
+        }
       }
     };
     window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
     };
-  }, [startRecording, stopRecording]);
+  }, [isRecording, startRecording, stopRecording]);
 
   const handleTextSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -473,7 +543,7 @@ export default function Home() {
     spokenMessageIds.current.clear();
     setMessages([]);
     setTextInput('');
-    setStatusText('Say something in any language, or press and hold the core to talk.');
+    setStatusText('Say something in any language, or tap the core to talk.');
   }, [isRecording, stopRecording, setMessages]);
 
   return (
@@ -535,18 +605,14 @@ export default function Home() {
       <div ref={reactorTiltRef} className="reactor-tilt mt-2 shrink-0 sm:mt-4">
         <button
           type="button"
-          aria-label="Hold to talk"
+          aria-label={isRecording ? 'Stop talking' : 'Tap to talk'}
           className="reactor mic-button cursor-pointer border-0 bg-transparent p-0"
-          onMouseDown={() => startRecording()}
-          onMouseUp={stopRecording}
-          onMouseLeave={() => isRecording && stopRecording()}
-          onTouchStart={(e) => {
-            e.preventDefault();
-            void startRecording();
-          }}
-          onTouchEnd={(e) => {
-            e.preventDefault();
-            stopRecording();
+          onClick={() => {
+            if (isRecording) {
+              stopRecording();
+            } else {
+              void startRecording(true);
+            }
           }}
         >
           <ReactorHUD phase={phase} />
@@ -556,8 +622,17 @@ export default function Home() {
       <div className="mt-2 shrink-0 text-center font-mono text-xs uppercase tracking-widest text-amber-200/60 sm:mt-3">
         {phaseLabel[phase]}
       </div>
-      <div className="shrink-0 px-2 text-center text-xs sm:text-sm text-amber-100/50 min-h-[1.25rem]">
-        {statusText}
+      <div
+        className="shrink-0 px-2 text-center text-xs sm:text-sm min-h-[1.25rem]"
+        style={{
+          color: isRecording && liveCaption ? 'var(--jarvis-amber)' : 'rgba(217, 167, 92, 0.5)',
+        }}
+      >
+        {isRecording && liveCaption
+          ? liveCaption
+          : !isRecording && wakeWordEnabled && wakeWordHeard
+            ? `heard: "${wakeWordHeard}"`
+            : statusText}
       </div>
 
       {messages.length > 0 && (
