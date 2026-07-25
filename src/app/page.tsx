@@ -6,6 +6,7 @@ import type { JarvisUIMessage } from '@/lib/agent/jarvis-agent';
 import { ReactorHUD } from '@/components/ReactorHUD';
 import { InfoPanel } from '@/components/InfoPanel';
 import { SettingsPanel } from '@/components/SettingsPanel';
+import { HAPTICS, setHapticsEnabled, vibrate } from '@/lib/haptics';
 
 const INFO_PANEL_AUTO_DISMISS_MS = 15000;
 
@@ -19,6 +20,219 @@ const DADDYS_HOME_PHRASES = ['daddys home', 'daddy home', 'daddys back'];
 const SILENCE_THRESHOLD = 12;
 const SILENCE_HOLD_MS = 1300;
 const MAX_AUTO_RECORDING_MS = 15000;
+
+// Whisper invents words out of near-silence — "thank you", "I don't know" and
+// similar turn up constantly when it is fed room tone. In a loop that reopens
+// the mic automatically, one hallucination becomes a reply, which reopens the
+// mic, which hallucinates again. So a recording only counts as speech if it
+// carried real energy for long enough; anything quieter is thrown away without
+// ever reaching transcription.
+// Measured against a real room: median level sits near 10, but background
+// bursts reach the low 40s — the same loudness as speech. Volume alone cannot
+// separate "talking to Jarvis" from "television in the corner", so the gate
+// also demands the energy be *sustained*: passing chatter is bursty, a
+// deliberate follow-up is not.
+const SPEECH_THRESHOLD = 24;
+const MIN_VOICED_MS = 500;
+// A hard stop on unattended turns. The gate reduces false triggers, it cannot
+// eliminate them, so a noisy room still must not be able to hold a
+// conversation with itself indefinitely.
+const MAX_CONSECUTIVE_FOLLOW_UPS = 3;
+
+// After a reply the mic reopens on its own so a conversation can continue
+// without re-triggering. If nothing is said in this window, Jarvis stands down.
+const FOLLOW_UP_WINDOW_MS = 6000;
+// A beat before reopening, so the tail of Jarvis's own speech doesn't bleed
+// from the speakers back into the microphone.
+const FOLLOW_UP_DELAY_MS = 350;
+
+// Ending a conversation out loud, rather than waiting out the silence timer.
+const SIGN_OFF_PATTERNS = [
+  /^(that|thats|that's) (will be |would be )?all\b/,
+  /^(thank you|thanks)( jarvis)?[.! ]*$/,
+  /^(goodbye|good bye|bye)( jarvis)?[.! ]*$/,
+  /^(nothing else|no more|stand down|dismissed)\b/,
+  /^jarvis,? (thats all|that's all|stand down|dismissed)\b/,
+];
+const SIGN_OFF_REPLIES = ['Very good, sir.', 'Standing by.', 'As you wish.'];
+
+function isSignOff(text: string): boolean {
+  const normalized = text.toLowerCase().replace(/[^a-z' ]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!normalized || normalized.split(' ').length > 5) return false;
+  return SIGN_OFF_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+const WAKE_WORD_STORAGE_KEY = 'jarvis:wake-word';
+const CONTINUOUS_STORAGE_KEY = 'jarvis:continuous';
+const HAPTICS_STORAGE_KEY = 'jarvis:haptics';
+
+// Boot sequence — the reactor coming online before it settles into idle.
+const BOOT_LINES = [
+  'ARC REACTOR — INITIALISING',
+  'DIAGNOSTICS — ALL SYSTEMS NOMINAL',
+  'VOICE INTERFACE — ONLINE',
+];
+const BOOT_LINE_MS = 620;
+
+interface SessionInfo {
+  name: string | null;
+  honorific: string;
+  lastSeenAt: string | null;
+  isNew: boolean;
+  legacyFacts: number;
+}
+
+function timeOfDayGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'Good morning';
+  if (hour < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
+/** JARVIS greets by the clock and acknowledges how long you've been gone —
+ * composed on the client so the hour is the user's local one, not the
+ * server's. */
+function composeGreeting(session: SessionInfo): string {
+  const address = session.name ?? session.honorific;
+  const opening = `${timeOfDayGreeting()}, ${address}.`;
+
+  if (session.isNew || !session.name) {
+    return `${opening} I don't believe we've been introduced.`;
+  }
+
+  if (!session.lastSeenAt) return `${opening} At your service.`;
+
+  const elapsedMs = Date.now() - new Date(session.lastSeenAt).getTime();
+  const hours = elapsedMs / 3_600_000;
+  const days = Math.floor(hours / 24);
+
+  if (hours < 1) return `${opening} Welcome back.`;
+  if (days < 1) return `${opening} It's been a few hours.`;
+  if (days === 1) return `${opening} It's been a day since we last spoke.`;
+  if (days < 14) return `${opening} It's been ${days} days since our last session.`;
+  return `${opening} It's been some time.`;
+}
+const GROQ_VOICE_STORAGE_KEY = 'jarvis:groq-voice';
+
+// JARVIS is British in the films, and the browser's own speech synthesis is
+// free, unlimited and needs no key — Edge in particular exposes Microsoft's
+// neural voices through it. Ordered best-first; the first one present wins.
+const PREFERRED_VOICES = [
+  'Microsoft Ryan Online (Natural)',
+  'Microsoft Thomas Online (Natural)',
+  'Microsoft Oliver Online (Natural)',
+  'Microsoft Brian Multilingual Online (Natural)',
+  'Microsoft Andrew Multilingual Online (Natural)',
+  'Google UK English Male',
+  'Daniel',
+];
+
+// Chromium silently truncates a single utterance after roughly 15 seconds.
+// Splitting on sentence boundaries keeps every chunk well under that, and
+// reads with more natural phrasing anyway.
+const SPEECH_CHUNK_CHARS = 180;
+
+function hasSpeechSynthesis(): boolean {
+  return typeof window !== 'undefined' && 'speechSynthesis' in window;
+}
+
+/** Voices load asynchronously in most browsers — the first getVoices() call
+ * routinely returns an empty list. */
+function whenVoicesReady(): Promise<void> {
+  return new Promise((resolve) => {
+    if (!hasSpeechSynthesis() || window.speechSynthesis.getVoices().length > 0) return resolve();
+    const timer = setTimeout(resolve, 1500);
+    window.speechSynthesis.addEventListener(
+      'voiceschanged',
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+}
+
+function pickJarvisVoice(): SpeechSynthesisVoice | null {
+  const voices = window.speechSynthesis.getVoices();
+  if (!voices.length) return null;
+  for (const name of PREFERRED_VOICES) {
+    const match = voices.find((voice) => voice.name.startsWith(name));
+    if (match) return match;
+  }
+  // None of the named voices exist on this platform — fall back by character:
+  // a British neural voice, then any British one, then any English at all.
+  return (
+    voices.find((voice) => voice.lang === 'en-GB' && /natural|neural/i.test(voice.name)) ??
+    voices.find((voice) => voice.lang === 'en-GB') ??
+    voices.find((voice) => voice.lang.startsWith('en')) ??
+    voices[0] ??
+    null
+  );
+}
+
+function chunkForSpeech(text: string): string[] {
+  const sentences = text.match(/[^.!?]+[.!?]*\s*/g) ?? [text];
+  const chunks: string[] = [];
+  let current = '';
+  for (const sentence of sentences) {
+    if (current && current.length + sentence.length > SPEECH_CHUNK_CHARS) {
+      chunks.push(current.trim());
+      current = sentence;
+    } else {
+      current += sentence;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks.filter(Boolean);
+}
+
+function speakWithBrowser(text: string, onDone: () => void): void {
+  const synth = window.speechSynthesis;
+  synth.cancel();
+  const voice = pickJarvisVoice();
+  const chunks = chunkForSpeech(text);
+  if (!chunks.length) return onDone();
+
+  chunks.forEach((chunk, i) => {
+    const utterance = new SpeechSynthesisUtterance(chunk);
+    if (voice) {
+      utterance.voice = voice;
+      utterance.lang = voice.lang;
+    }
+    utterance.rate = 1.02;
+    utterance.pitch = 0.95;
+    // Only the final chunk reports completion; an error anywhere ends the turn
+    // rather than leaving the UI stuck in the speaking phase.
+    if (i === chunks.length - 1) utterance.onend = onDone;
+    utterance.onerror = onDone;
+    synth.speak(utterance);
+  });
+}
+
+const IDLE_HINT_TAP = 'Tap the core or press space to talk.';
+const IDLE_HINT_WAKE = 'Listening for “Jarvis” — or tap the core to talk.';
+
+// Errors that mean the mic will never arrive on its own: retrying just burns
+// CPU. 'audio-capture' in particular is what an OS-level microphone privacy
+// block looks like — the browser grants the permission, the system refuses
+// the device — so it has to reach the user as text or the wake word just
+// appears to be on while hearing nothing.
+const FATAL_RECOGNITION_ERRORS = new Set(['not-allowed', 'service-not-allowed', 'audio-capture']);
+// Recognition ends on its own constantly (every pause in speech), so a plain
+// end is not a failure and restarts promptly. Anything else backs off.
+const BENIGN_RECOGNITION_ERRORS = new Set(['no-speech', 'aborted']);
+const RECOGNITION_RESTART_MS = 250;
+const RECOGNITION_BACKOFF_BASE_MS = 400;
+const RECOGNITION_BACKOFF_MAX_MS = 10000;
+const MAX_RECOGNITION_FAILURES = 6;
+
+const RECOGNITION_ERROR_MESSAGES: Record<string, string> = {
+  'not-allowed': 'Microphone access denied for wake word.',
+  'service-not-allowed': 'Speech recognition is blocked in this browser.',
+  'audio-capture':
+    "Can't reach the microphone. Check your system's mic privacy settings and that no other app is using it.",
+};
 
 type Phase = 'idle' | 'listening' | 'thinking' | 'speaking';
 
@@ -81,10 +295,29 @@ function containsWakePhrase(transcript: string): boolean {
   });
 }
 
-/** Monitors a mic stream's volume and calls onSilence after speech is
- * followed by a sustained quiet period (or a hard duration cap), so a
- * wake-word-triggered recording can stop itself without a button release. */
-function watchForSilence(stream: MediaStream, onSilence: () => void): () => void {
+// Roughly the RMS of confident speech at arm's length. Used only to map raw
+// amplitude onto a 0–1 range for the visuals; the silence logic still works
+// off the raw value.
+const MIC_LEVEL_CEILING = 40;
+
+// Analysis cadence. Fast enough for responsive silence detection and a lively
+// core; the CSS transition on the core smooths the gaps between samples.
+const MIC_TICK_MS = 80;
+
+/** Monitors a mic stream's volume. Calls onSilence after speech is followed by
+ * a sustained quiet period (or a hard duration cap), so a wake-word-triggered
+ * recording can stop itself without a button release. Pass onSilence as null to
+ * meter the stream without auto-stopping it. onLevel receives a normalised 0–1
+ * amplitude every frame, which drives the reactor's core while recording. */
+function watchForSilence(
+  stream: MediaStream,
+  onSilence: ((reason: 'spoke' | 'nothing-said') => void) | null,
+  onLevel?: (level: number) => void,
+  /** If set, give up this long after opening when nobody has said anything —
+   * used to close an unanswered follow-up window instead of recording, and
+   * then transcribing, several seconds of room tone. */
+  noSpeechMs?: number,
+): () => void {
   const AudioContextCtor =
     window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
   const audioCtx = new AudioContextCtor();
@@ -94,16 +327,22 @@ function watchForSilence(stream: MediaStream, onSilence: () => void): () => void
   source.connect(analyser);
   const data = new Uint8Array(analyser.frequencyBinCount);
 
-  let hasSpoken = false;
+  let voicedMs = 0;
   let silenceStart: number | null = null;
   const startTime = Date.now();
-  let rafId = 0;
   let stopped = false;
+
+  // Driven by a timer rather than requestAnimationFrame: rAF is suspended
+  // entirely in a background tab, which would leave a recording running
+  // forever if the user switched tabs or their screen locked mid-sentence.
+  // Timers keep firing there (throttled to about 1s), so the silence stop and
+  // the hard cap still happen.
+  let intervalId = 0 as unknown as ReturnType<typeof setInterval>;
 
   const cleanup = () => {
     if (stopped) return;
     stopped = true;
-    cancelAnimationFrame(rafId);
+    clearInterval(intervalId);
     source.disconnect();
     void audioCtx.close();
   };
@@ -117,28 +356,39 @@ function watchForSilence(stream: MediaStream, onSilence: () => void): () => void
     }
     const rms = Math.sqrt(sumSquares / data.length);
 
-    if (rms > SILENCE_THRESHOLD) {
-      hasSpoken = true;
-      silenceStart = null;
-    } else if (hasSpoken) {
-      if (silenceStart === null) silenceStart = Date.now();
-      else if (Date.now() - silenceStart > SILENCE_HOLD_MS) {
+    onLevel?.(Math.min(1, rms / MIC_LEVEL_CEILING));
+
+    if (rms > SPEECH_THRESHOLD) voicedMs += MIC_TICK_MS;
+    // Only sustained, loud-enough audio counts as somebody actually talking.
+    const hasSpoken = voicedMs >= MIN_VOICED_MS;
+
+    if (onSilence) {
+      if (rms > SILENCE_THRESHOLD) {
+        silenceStart = null;
+      } else if (hasSpoken) {
+        if (silenceStart === null) silenceStart = Date.now();
+        else if (Date.now() - silenceStart > SILENCE_HOLD_MS) {
+          cleanup();
+          onSilence('spoke');
+          return;
+        }
+      }
+
+      if (!hasSpoken && noSpeechMs !== undefined && Date.now() - startTime > noSpeechMs) {
         cleanup();
-        onSilence();
+        onSilence('nothing-said');
+        return;
+      }
+
+      if (Date.now() - startTime > MAX_AUTO_RECORDING_MS) {
+        cleanup();
+        onSilence(hasSpoken ? 'spoke' : 'nothing-said');
         return;
       }
     }
-
-    if (Date.now() - startTime > MAX_AUTO_RECORDING_MS) {
-      cleanup();
-      onSilence();
-      return;
-    }
-
-    rafId = requestAnimationFrame(tick);
   };
 
-  rafId = requestAnimationFrame(tick);
+  intervalId = setInterval(tick, MIC_TICK_MS);
   return cleanup;
 }
 
@@ -147,8 +397,17 @@ function messageText(message: JarvisUIMessage): string {
   // parts (one per step, e.g. narrating before a tool call and again
   // after). Only the last one is the model's actual final reply — joining
   // them all reads as the model repeating itself.
+  //
+  // The last part can also be empty: a turn that ends on a tool step emits a
+  // trailing blank text part, and taking it verbatim renders a silent reply
+  // and speaks nothing. Fall back to the last part that actually has words.
   const textParts = message.parts.filter((part): part is Extract<typeof part, { type: 'text' }> => part.type === 'text');
-  return (textParts.at(-1)?.text ?? '').trim();
+  return (
+    textParts
+      .map((part) => part.text.trim())
+      .filter(Boolean)
+      .at(-1) ?? ''
+  );
 }
 
 function toolPartsOf(message: JarvisUIMessage) {
@@ -170,16 +429,23 @@ function isOpenTabPart(
 export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [statusText, setStatusText] = useState(
-    'Say something in any language, or tap the core to talk.',
-  );
+  // Empty means "nothing to report" — the idle hint is derived at render time
+  // from whether the wake word is actually armed, so the UI never claims to be
+  // passively listening when it isn't.
+  const [statusText, setStatusText] = useState('');
   const [textInput, setTextInput] = useState('');
   const [clock, setClock] = useState('');
   const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
   const [wakeWordSupported, setWakeWordSupported] = useState(true);
+  const [useGroqVoice, setUseGroqVoice] = useState(false);
+  const [continuous, setContinuous] = useState(true);
+  const [haptics, setHaptics] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [liveCaption, setLiveCaption] = useState('');
   const [wakeWordHeard, setWakeWordHeard] = useState('');
+  const [bootStep, setBootStep] = useState(0);
+  const [booting, setBooting] = useState(true);
+  const [session, setSession] = useState<SessionInfo | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -188,6 +454,13 @@ export default function Home() {
   const transcriptRef = useRef<HTMLElement | null>(null);
   const reactorTiltRef = useRef<HTMLDivElement | null>(null);
   const silenceCleanupRef = useRef<(() => void) | null>(null);
+  const discardRecordingRef = useRef(false);
+  // Set when a reply is about to be spoken, so the mic reopens for a follow-up
+  // once it finishes — this is what makes the conversation continuous.
+  const followUpPendingRef = useRef(false);
+  const wasSpeakingRef = useRef(false);
+  const followUpCountRef = useRef(0);
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const recognitionRef = useRef<MinimalSpeechRecognition | null>(null);
   const captionRecognitionRef = useRef<MinimalSpeechRecognition | null>(null);
   const currentAudioUrlRef = useRef<string | null>(null);
@@ -196,10 +469,115 @@ export default function Home() {
     if (!getSpeechRecognitionCtor()) setWakeWordSupported(false);
   }, []);
 
+  // Restore the wake-word preference. Read after mount rather than in a lazy
+  // initializer so the server-rendered markup and the first client render
+  // agree.
+  useEffect(() => {
+    try {
+      // Reading a persisted preference out of localStorage is exactly the
+      // "sync from an external system" case the rule is aimed past; it can't
+      // be a lazy initializer without making the client's first render
+      // disagree with the server's.
+      // On by default — calling its name is the primary way in, so it has to
+      // work without first being discovered in Settings. Only an explicit
+      // 'off' disables it.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (localStorage.getItem(WAKE_WORD_STORAGE_KEY) !== 'off') setWakeWordEnabled(true);
+      if (localStorage.getItem(GROQ_VOICE_STORAGE_KEY) === 'on') setUseGroqVoice(true);
+      if (localStorage.getItem(CONTINUOUS_STORAGE_KEY) === 'off') setContinuous(false);
+      if (localStorage.getItem(HAPTICS_STORAGE_KEY) === 'off') {
+        setHaptics(false);
+        setHapticsEnabled(false);
+      }
+    } catch {
+      // private mode / storage disabled — just leave it off
+    }
+  }, []);
+
+  const toggleHaptics = useCallback(() => {
+    const next = !haptics;
+    setHaptics(next);
+    setHapticsEnabled(next);
+    // Fire one immediately so turning it on demonstrates what it feels like.
+    if (next) vibrate(HAPTICS.listenStart);
+    try {
+      localStorage.setItem(HAPTICS_STORAGE_KEY, next ? 'on' : 'off');
+    } catch {
+      // ignore — the toggle still works for this session
+    }
+  }, [haptics]);
+
+  const toggleContinuous = useCallback(() => {
+    const next = !continuous;
+    setContinuous(next);
+    if (!next) followUpPendingRef.current = false;
+    try {
+      localStorage.setItem(CONTINUOUS_STORAGE_KEY, next ? 'on' : 'off');
+    } catch {
+      // ignore — the toggle still works for this session
+    }
+  }, [continuous]);
+
+  const toggleGroqVoice = useCallback(() => {
+    const next = !useGroqVoice;
+    setUseGroqVoice(next);
+    setStatusText('');
+    try {
+      localStorage.setItem(GROQ_VOICE_STORAGE_KEY, next ? 'on' : 'off');
+    } catch {
+      // ignore — the toggle still works for this session
+    }
+  }, [useGroqVoice]);
+
+  // Only an explicit toggle is persisted. A fatal error disables the wake word
+  // for the session but leaves the stored preference alone, so fixing the mic
+  // and reloading brings it back without digging through settings again.
+  const toggleWakeWord = useCallback(() => {
+    const next = !wakeWordEnabled;
+    setWakeWordEnabled(next);
+    setStatusText('');
+    try {
+      localStorage.setItem(WAKE_WORD_STORAGE_KEY, next ? 'on' : 'off');
+    } catch {
+      // ignore — the toggle still works for this session
+    }
+  }, [wakeWordEnabled]);
+
   useEffect(() => {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});
     }
+  }, []);
+
+  // Boot sequence. It also covers the session fetch, so the greeting is ready
+  // by the time the reactor settles.
+  useEffect(() => {
+    let cancelled = false;
+
+    void fetch('/api/session')
+      .then((res) => res.json())
+      .then((data: SessionInfo) => {
+        if (!cancelled) setSession(data);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSession({ name: null, honorific: 'sir', lastSeenAt: null, isNew: true, legacyFacts: 0 });
+        }
+      });
+
+    const timers = BOOT_LINES.map((_, i) =>
+      setTimeout(() => !cancelled && setBootStep(i + 1), BOOT_LINE_MS * (i + 1)),
+    );
+    const finish = setTimeout(
+      () => !cancelled && setBooting(false),
+      BOOT_LINE_MS * (BOOT_LINES.length + 1),
+    );
+
+    return () => {
+      cancelled = true;
+      timers.forEach(clearTimeout);
+      clearTimeout(finish);
+    };
   }, []);
 
   useEffect(() => {
@@ -224,37 +602,113 @@ export default function Home() {
     };
   }, []);
 
-  const speak = useCallback(async (text: string) => {
-    if (!text) return;
-    try {
-      setIsSpeaking(true);
-      const res = await fetch('/api/speak', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      currentAudioUrlRef.current = url;
-      audio.onended = () => {
-        setIsSpeaking(false);
-        URL.revokeObjectURL(url);
-        currentAudioUrlRef.current = null;
-      };
-      await audio.play();
-    } catch (err) {
-      console.error(err);
-      setIsSpeaking(false);
+  /** Silences whatever is currently talking, whichever engine produced it. */
+  const stopSpeaking = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
     }
+    if (currentAudioUrlRef.current) {
+      URL.revokeObjectURL(currentAudioUrlRef.current);
+      currentAudioUrlRef.current = null;
+    }
+    if (hasSpeechSynthesis()) window.speechSynthesis.cancel();
+    setIsSpeaking(false);
   }, []);
+
+  const speak = useCallback(
+    async (text: string) => {
+      if (!text) return;
+      stopSpeaking();
+      setIsSpeaking(true);
+      vibrate(HAPTICS.replyStart);
+
+      let finished = false;
+      const done = () => {
+        if (finished) return;
+        finished = true;
+        setIsSpeaking(false);
+      };
+
+      // Groq's TTS sounds better but is capped at a few thousand tokens a day,
+      // so it's opt-in. Any failure (quota, network) drops straight to the
+      // browser voice instead of leaving the reply silent.
+      if (useGroqVoice) {
+        try {
+          const res = await fetch('/api/speak', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text }),
+          });
+          if (!res.ok) throw new Error(await res.text());
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          audioRef.current = audio;
+          currentAudioUrlRef.current = url;
+          audio.onended = () => {
+            URL.revokeObjectURL(url);
+            currentAudioUrlRef.current = null;
+            done();
+          };
+          audio.onerror = done;
+          await audio.play();
+          return;
+        } catch (err) {
+          console.error(err);
+          setStatusText('Premium voice unavailable — using the browser voice.');
+        }
+      }
+
+      if (!hasSpeechSynthesis()) {
+        setStatusText('This browser has no speech support, so replies stay text-only.');
+        done();
+        return;
+      }
+
+      await whenVoicesReady();
+      speakWithBrowser(text, done);
+    },
+    [useGroqVoice, stopSpeaking],
+  );
+
+  // Greeting fires once the reactor has settled and the session is known.
+  const greetedRef = useRef(false);
+  useEffect(() => {
+    if (booting || !session || greetedRef.current) return;
+    greetedRef.current = true;
+
+    const greeting = composeGreeting(session);
+    setStatusText(greeting);
+    void speak(greeting);
+
+    // Autoplay policy blocks sound on a first visit with no prior interaction,
+    // so the greeting can be dropped silently. The text is already on screen;
+    // if nothing actually started, say it on the first gesture instead.
+    const retry = () => void speak(greeting);
+    const check = setTimeout(() => {
+      const started =
+        (hasSpeechSynthesis() && (window.speechSynthesis.speaking || window.speechSynthesis.pending)) ||
+        audioRef.current !== null;
+      if (started) return;
+      window.addEventListener('pointerdown', retry, { once: true });
+      window.addEventListener('keydown', retry, { once: true });
+    }, 1200);
+
+    return () => {
+      clearTimeout(check);
+      window.removeEventListener('pointerdown', retry);
+      window.removeEventListener('keydown', retry);
+    };
+  }, [booting, session, speak]);
 
   const { messages, sendMessage, status, setMessages } = useChat<JarvisUIMessage>({
     onFinish: ({ message }) => {
       if (spokenMessageIds.current.has(message.id)) return;
       spokenMessageIds.current.add(message.id);
+      // Arm the follow-up before speaking: when the speech ends, the mic
+      // reopens so the user can simply keep talking.
+      followUpPendingRef.current = continuous;
       void speak(messageText(message));
     },
     onError: (error) => {
@@ -332,9 +786,14 @@ export default function Home() {
     return () => clearInterval(id);
   }, []);
 
-  const stopRecording = useCallback(() => {
+  const stopRecording = useCallback((discard = false) => {
+    // A discarded stop means nothing was said — skip transcription entirely
+    // rather than sending several seconds of room tone to Whisper.
+    discardRecordingRef.current = discard;
+    if (discard) followUpPendingRef.current = false;
     silenceCleanupRef.current?.();
     silenceCleanupRef.current = null;
+    stageRef.current?.style.setProperty('--mic-level', '0');
     if (captionRecognitionRef.current) {
       captionRecognitionRef.current.onresult = null;
       captionRecognitionRef.current.onerror = null;
@@ -345,24 +804,22 @@ export default function Home() {
     setLiveCaption('');
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
+      // Only when a recording was genuinely running — this function is also
+      // called defensively during teardown.
+      vibrate(HAPTICS.listenStop);
     }
     setIsRecording(false);
   }, []);
 
   const startRecording = useCallback(
-    async (auto = false) => {
+    async (auto = false, isFollowUp = false) => {
       if (isRecording || status !== 'ready') return;
+      // A deliberate activation — tap, space bar, wake word — means a person is
+      // driving, so the unattended-turn budget starts over.
+      if (!isFollowUp) followUpCountRef.current = 0;
       // Barge-in: talking (however triggered) always cuts off whatever
       // Jarvis is currently saying, the way Tony talks over JARVIS.
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-      }
-      if (currentAudioUrlRef.current) {
-        URL.revokeObjectURL(currentAudioUrlRef.current);
-        currentAudioUrlRef.current = null;
-      }
-      setIsSpeaking(false);
+      stopSpeaking();
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         const recorder = new MediaRecorder(stream);
@@ -372,9 +829,15 @@ export default function Home() {
         };
         recorder.onstop = async () => {
           stream.getTracks().forEach((track) => track.stop());
+          if (discardRecordingRef.current) {
+            discardRecordingRef.current = false;
+            setStatusText('');
+            return;
+          }
           const blob = new Blob(chunksRef.current, { type: recorder.mimeType });
           if (blob.size < 500) {
-            setStatusText("Didn't catch that. Try again, a little closer to the mic.");
+            // On a follow-up this is just a quiet room, not a failed attempt.
+            setStatusText(isFollowUp ? '' : "Didn't catch that. Try again, a little closer to the mic.");
             return;
           }
           setStatusText('Transcribing…');
@@ -384,12 +847,21 @@ export default function Home() {
             const res = await fetch('/api/transcribe', { method: 'POST', body: formData });
             if (!res.ok) throw new Error(await res.text());
             const { text } = await res.json();
-            if (text?.trim()) {
-              setStatusText('');
-              sendMessage({ text: text.trim() });
-            } else {
-              setStatusText("Didn't catch that. Try again.");
+            const spoken = text?.trim();
+            if (!spoken) {
+              setStatusText(isFollowUp ? '' : "Didn't catch that. Try again.");
+              return;
             }
+            // Ending the conversation out loud never reaches the model — it
+            // just closes the loop with an acknowledgement.
+            if (isSignOff(spoken)) {
+              followUpPendingRef.current = false;
+              setStatusText('');
+              void speak(SIGN_OFF_REPLIES[Math.floor(Math.random() * SIGN_OFF_REPLIES.length)]);
+              return;
+            }
+            setStatusText('');
+            sendMessage({ text: spoken });
           } catch (err) {
             console.error(err);
             setStatusText('Transcription failed. Check your setup.');
@@ -398,12 +870,23 @@ export default function Home() {
         mediaRecorderRef.current = recorder;
         recorder.start();
         setIsRecording(true);
+        // Your turn — felt rather than seen, so it works with the phone in a
+        // pocket or across the room.
+        vibrate(HAPTICS.listenStart);
         setStatusText('Listening…');
         setLiveCaption('');
 
-        if (auto) {
-          silenceCleanupRef.current = watchForSilence(stream, () => stopRecording());
-        }
+        // Meter the stream whether or not it auto-stops, so the core can track
+        // the user's voice. The level is written straight to a CSS custom
+        // property rather than React state — this fires every animation frame.
+        silenceCleanupRef.current = watchForSilence(
+          stream,
+          auto ? (reason) => stopRecording(reason === 'nothing-said') : null,
+          (level) => stageRef.current?.style.setProperty('--mic-level', level.toFixed(3)),
+          // A follow-up window closes itself if the room stays quiet; a
+          // deliberate activation waits for you.
+          isFollowUp ? FOLLOW_UP_WINDOW_MS : undefined,
+        );
 
         // Live captions: a second, purely visual speech-recognition stream
         // running alongside the actual recording, so you see what it's
@@ -436,7 +919,7 @@ export default function Home() {
         setStatusText('Microphone access denied.');
       }
     },
-    [isRecording, status, sendMessage, stopRecording],
+    [isRecording, status, sendMessage, stopRecording, stopSpeaking, speak],
   );
 
   // Wake-word listening: active while idle, and also while Jarvis is
@@ -462,35 +945,67 @@ export default function Home() {
     recognition.interimResults = true;
     recognition.lang = 'en-US';
 
+    // `done` covers every intentional stop (teardown, wake-word handoff, giving
+    // up after repeated failures) so the end handler can tell those apart from
+    // the routine end-of-utterance that should restart.
+    let done = false;
+    let consecutiveFailures = 0;
+    let restartTimer: ReturnType<typeof setTimeout> | undefined;
+
     recognition.onresult = (event) => {
+      // Audio is genuinely flowing, so forget any earlier backoff.
+      consecutiveFailures = 0;
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const transcript = event.results[i][0]?.transcript ?? '';
         setWakeWordHeard(transcript);
         if (containsWakePhrase(transcript)) {
-          // Prevent the onend auto-restart from racing the handoff to the
-          // command recorder below — this stop is intentional, not a drop.
-          recognition.onend = null;
+          // Prevent the auto-restart from racing the handoff to the command
+          // recorder below — this stop is intentional, not a drop.
+          done = true;
           recognition.stop();
           setWakeWordHeard('');
+          // Confirm it heard you before anything else happens.
+          vibrate(HAPTICS.wakeWord);
           setStatusText('Wake word detected…');
           void startRecording(true);
           return;
         }
       }
     };
+
     recognition.onerror = (event) => {
-      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+      if (BENIGN_RECOGNITION_ERRORS.has(event.error)) return;
+      consecutiveFailures++;
+      if (FATAL_RECOGNITION_ERRORS.has(event.error)) {
+        done = true;
         setWakeWordEnabled(false);
-        setStatusText('Microphone access denied for wake word.');
+        setStatusText(RECOGNITION_ERROR_MESSAGES[event.error] ?? `Wake word stopped: ${event.error}.`);
       }
     };
+
+    // Every restart goes through a timer. Restarting synchronously here is what
+    // turns a persistent failure into a hot loop: the error fires, end fires,
+    // start throws or immediately errors again, thousands of times a second.
     recognition.onend = () => {
       setWakeWordHeard('');
-      try {
-        recognition.start();
-      } catch {
-        // already running or being torn down — ignore
+      if (done) return;
+      if (consecutiveFailures >= MAX_RECOGNITION_FAILURES) {
+        setWakeWordEnabled(false);
+        setStatusText('Wake word keeps failing to start. Turn it back on in settings to retry.');
+        return;
       }
+      const delay =
+        consecutiveFailures === 0
+          ? RECOGNITION_RESTART_MS
+          : Math.min(RECOGNITION_BACKOFF_BASE_MS * 2 ** (consecutiveFailures - 1), RECOGNITION_BACKOFF_MAX_MS);
+      restartTimer = setTimeout(() => {
+        if (done) return;
+        try {
+          recognition.start();
+        } catch {
+          // already running or being torn down — ignore
+        }
+      }, delay);
     };
 
     recognitionRef.current = recognition;
@@ -501,6 +1016,8 @@ export default function Home() {
     }
 
     return () => {
+      done = true;
+      clearTimeout(restartTimer);
       recognition.onresult = null;
       recognition.onerror = null;
       recognition.onend = null;
@@ -508,6 +1025,27 @@ export default function Home() {
       setWakeWordHeard('');
     };
   }, [wakeWordEnabled, phase, startRecording]);
+
+  // Continuous conversation: the moment a spoken reply finishes, reopen the
+  // mic for a follow-up. One wake word starts a whole exchange instead of
+  // every single turn needing its own trigger.
+  useEffect(() => {
+    const wasSpeaking = wasSpeakingRef.current;
+    wasSpeakingRef.current = isSpeaking;
+    if (!wasSpeaking || isSpeaking) return;
+    if (!followUpPendingRef.current) return;
+    followUpPendingRef.current = false;
+
+    if (followUpCountRef.current >= MAX_CONSECUTIVE_FOLLOW_UPS) {
+      followUpCountRef.current = 0;
+      setStatusText('Standing by.');
+      return;
+    }
+    followUpCountRef.current += 1;
+
+    const timer = setTimeout(() => void startRecording(true, true), FOLLOW_UP_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [isSpeaking, startRecording]);
 
   useEffect(() => {
     const isTypingTarget = (el: EventTarget | null) =>
@@ -538,20 +1076,27 @@ export default function Home() {
 
   const startNewSession = useCallback(() => {
     if (isRecording) stopRecording();
-    audioRef.current?.pause();
-    setIsSpeaking(false);
+    stopSpeaking();
     spokenMessageIds.current.clear();
     setMessages([]);
     setTextInput('');
-    setStatusText('Say something in any language, or tap the core to talk.');
-  }, [isRecording, stopRecording, setMessages]);
+    setStatusText('');
+  }, [isRecording, stopRecording, stopSpeaking, setMessages]);
+
+  const idleHint = wakeWordEnabled ? IDLE_HINT_WAKE : IDLE_HINT_TAP;
 
   return (
-    <div className={`phase-${phase} relative flex h-dvh flex-col items-center overflow-hidden px-4 sm:px-6`}>
-      <div className="hud-bracket tl" />
-      <div className="hud-bracket tr" />
-      <div className="hud-bracket bl" />
-      <div className="hud-bracket br" />
+    <div
+      ref={stageRef}
+      className={`app-shell phase-${phase} ${messages.length > 0 ? 'has-sheet' : ''} ${booting ? 'is-booting' : ''}`}
+    >
+      {/* One mesh layer per phase, crossfaded by opacity. Four real layers
+          rather than one mutating gradient, so the transition is a true
+          blend instead of a snap. */}
+      <div className="mesh mesh-idle" />
+      <div className="mesh mesh-listening" />
+      <div className="mesh mesh-thinking" />
+      <div className="mesh mesh-speaking" />
 
       {infoPanel && (
         <InfoPanel
@@ -562,23 +1107,25 @@ export default function Home() {
         />
       )}
 
-      <div className="hud-readout fixed left-6 top-5 hidden sm:block">
-        {clock}
-        <br />
-        LOCAL TIME
-      </div>
-      <div className="hud-readout fixed right-6 top-5 hidden text-right sm:block">
-        <span className="hud-dot mr-1.5 align-middle" />
-        {linkLabel[phase]}
-        <br />
-        GPT-OSS-120B
-      </div>
-
       {settingsOpen && (
         <SettingsPanel
           wakeWordEnabled={wakeWordEnabled}
           wakeWordSupported={wakeWordSupported}
-          onToggleWakeWord={() => setWakeWordEnabled((v) => !v)}
+          onToggleWakeWord={toggleWakeWord}
+          useGroqVoice={useGroqVoice}
+          onToggleGroqVoice={toggleGroqVoice}
+          continuous={continuous}
+          onToggleContinuous={toggleContinuous}
+          haptics={haptics}
+          onToggleHaptics={toggleHaptics}
+          legacyFacts={session?.legacyFacts ?? 0}
+          onImportLegacy={async () => {
+            const res = await fetch('/api/session', { method: 'POST' });
+            if (!res.ok) return;
+            const result = (await res.json()) as { facts: number; name: string | null };
+            setSession((current) => (current ? { ...current, legacyFacts: 0, name: result.name ?? current.name } : current));
+            setStatusText(`Imported ${result.facts} remembered fact${result.facts === 1 ? '' : 's'}.`);
+          }}
           hasMessages={messages.length > 0}
           onNewSession={() => {
             startNewSession();
@@ -588,92 +1135,111 @@ export default function Home() {
         />
       )}
 
-      <header className="shrink-0 pt-[max(1rem,env(safe-area-inset-top))] text-center">
-        <h1 className="text-xs sm:text-sm font-mono tracking-[0.4em] sm:tracking-[0.5em] text-amber-200/70 uppercase">
-          Jarvis
-        </h1>
+      <header className="chrome-top">
+        <span className="nav-brand">Jarvis</span>
+        <div className="flex items-center gap-3">
+          <span className="chrome-clock hidden sm:inline">{clock}</span>
+          <button type="button" onClick={() => setSettingsOpen(true)} className="nav-btn nav-btn-ghost">
+            Settings
+          </button>
+        </div>
       </header>
 
-      <button
-        type="button"
-        onClick={() => setSettingsOpen(true)}
-        className="mt-2 shrink-0 font-mono text-[10px] uppercase tracking-widest text-amber-500/40 transition-colors hover:text-amber-300/80"
-      >
-        [ settings ]
-      </button>
-
-      <div ref={reactorTiltRef} className="reactor-tilt mt-2 shrink-0 sm:mt-4">
-        <button
-          type="button"
-          aria-label={isRecording ? 'Stop talking' : 'Tap to talk'}
-          className="reactor mic-button cursor-pointer border-0 bg-transparent p-0"
-          onClick={() => {
-            if (isRecording) {
-              stopRecording();
-            } else {
-              void startRecording(true);
-            }
-          }}
-        >
-          <ReactorHUD phase={phase} />
-        </button>
-      </div>
-
-      <div className="mt-2 shrink-0 text-center font-mono text-xs uppercase tracking-widest text-amber-200/60 sm:mt-3">
-        {phaseLabel[phase]}
-      </div>
-      <div
-        className="shrink-0 px-2 text-center text-xs sm:text-sm min-h-[1.25rem]"
-        style={{
-          color: isRecording && liveCaption ? 'var(--jarvis-amber)' : 'rgba(217, 167, 92, 0.5)',
-        }}
-      >
-        {isRecording && liveCaption
-          ? liveCaption
-          : !isRecording && wakeWordEnabled && wakeWordHeard
-            ? `heard: "${wakeWordHeard}"`
-            : statusText}
-      </div>
-
-      {messages.length > 0 && (
-        <section
-          ref={transcriptRef}
-          className="terminal-feed mt-3 flex min-h-0 w-full max-w-xl flex-1 flex-col gap-4 overflow-y-auto px-1 py-6 font-mono sm:mt-4"
-        >
-          {messages.map((message) => {
-            const isUser = message.role === 'user';
-            return (
-              <div key={message.id} className="message-enter">
-                <p
-                  className="whitespace-pre-wrap text-[13px] leading-relaxed sm:text-sm"
-                  style={{
-                    color: isUser ? 'rgba(217, 167, 92, 0.8)' : 'rgba(250, 238, 214, 0.95)',
-                  }}
-                >
-                  {isUser ? `> ${messageText(message)}` : messageText(message)}
-                </p>
-                {toolPartsOf(message).map((part, i) => (
-                  <span key={i} className="mt-1 block text-[10px] tracking-wide text-amber-500/35">
-                    # {part.type.replace('tool-', '')}
-                  </span>
-                ))}
+      <>
+        {/* Status sits above the reactor rather than below it, so the sheet can
+            rise over the lower half without ever colliding with this text. */}
+        <div className="stage-status">
+          {booting ? (
+            <div className="boot-lines" role="status">
+              {BOOT_LINES.slice(0, bootStep).map((line) => (
+                <div key={line} className="boot-line">
+                  {line}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <>
+              <div className="phase-row flex items-center gap-2">
+                <span className="band-dot" />
+                <span className="phase-label">{phaseLabel[phase]}</span>
               </div>
-            );
-          })}
-        </section>
-      )}
 
-      <form
-        onSubmit={handleTextSubmit}
-        className="w-full max-w-xl shrink-0 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
-      >
-        <div className="flex items-center gap-2 border-b border-amber-800/40 px-1 py-2 transition-colors focus-within:border-amber-400/80">
-          <span className="hud-caret font-mono text-amber-400">{'>'}</span>
+              <p className={`band-status max-w-md text-center ${isRecording && liveCaption ? 'is-caption' : ''}`}>
+                {isRecording && liveCaption
+                  ? liveCaption
+                  : !isRecording && wakeWordEnabled && wakeWordHeard
+                    ? `heard: "${wakeWordHeard}"`
+                    : statusText || idleHint}
+              </p>
+            </>
+          )}
+        </div>
+
+        <div className="stage-core">
+          {/* Remounted on every phase change by its key, so the burst replays
+              each time the state actually flips. */}
+          <span key={phase} className="shockwave" aria-hidden />
+          <div ref={reactorTiltRef} className="reactor-tilt">
+            <button
+              type="button"
+              aria-label={isRecording ? 'Stop talking' : 'Tap to talk'}
+              className="reactor mic-button cursor-pointer border-0 bg-transparent p-0"
+              onClick={() => {
+                if (isRecording) {
+                  stopRecording();
+                } else {
+                  void startRecording(true);
+                }
+              }}
+            >
+              <ReactorHUD phase={phase} />
+            </button>
+          </div>
+        </div>
+
+        <div className="stage-readout band-readout">
+          <span>{linkLabel[phase]}</span>
+          <span aria-hidden>·</span>
+          <span>GPT-OSS-120B</span>
+        </div>
+
+        {/* Frosted sheet: the conversation rises over the stage rather than
+            displacing it, so the reactor keeps its full scale and stays
+            visible glowing behind the text. */}
+        {messages.length > 0 && (
+          <section ref={transcriptRef} className="transcript-sheet">
+            {messages.map((message) => {
+              const isUser = message.role === 'user';
+              return (
+                <div key={message.id} className="message-enter">
+                  <div className="sheet-eyebrow mb-1.5">{isUser ? 'You' : 'Jarvis'}</div>
+                  <p className={`whitespace-pre-wrap ${isUser ? 'msg-user' : 'msg-assistant'}`}>
+                    {messageText(message)}
+                  </p>
+                  {toolPartsOf(message).length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {toolPartsOf(message).map((part, i) => (
+                        <span key={i} className="tool-tag">
+                          {part.type.replace('tool-', '')}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </section>
+        )}
+      </>
+
+      <form onSubmit={handleTextSubmit} className="composer-float">
+        <div className="composer">
+          <span className="composer-caret">{'>'}</span>
           <input
             value={textInput}
             onChange={(e) => setTextInput(e.target.value)}
             placeholder="Type to Jarvis…"
-            className="w-full bg-transparent font-mono text-base text-amber-50 placeholder:text-amber-100/25 focus:outline-none"
+            className="composer-input"
           />
         </div>
       </form>

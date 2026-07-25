@@ -119,25 +119,38 @@ export function ReactorHUD({ phase }: { phase: Phase }) {
   return (
     <svg viewBox="0 0 400 400" className={`reactor-svg phase-${phase}`} aria-hidden>
       <defs>
-        <radialGradient id="jarvis-core-gradient" cx="50%" cy="50%" r="50%">
+        {/* Three core gradients, one per brand gradient pair. Which one a
+            phase uses is picked in CSS via the --reactor-core / --reactor-bloom
+            custom properties, so the phase rules stay in one place. */}
+        <radialGradient id="jarvis-core-develop" cx="50%" cy="50%" r="50%">
           <stop offset="0%" stopColor="#ffffff" />
-          <stop offset="22%" stopColor="#e2fbff" />
-          <stop offset="55%" stopColor="#4cd9ff" />
-          <stop offset="100%" stopColor="#0a3040" stopOpacity="0" />
+          <stop offset="22%" stopColor="#d9fbf8" />
+          <stop offset="55%" stopColor="#00dfd8" />
+          <stop offset="100%" stopColor="#007cf0" stopOpacity="0" />
         </radialGradient>
-        <radialGradient id="jarvis-core-gradient-amber" cx="50%" cy="50%" r="50%">
-          <stop offset="0%" stopColor="#fffaf0" />
-          <stop offset="22%" stopColor="#ffe6bf" />
-          <stop offset="55%" stopColor="#ffb454" />
-          <stop offset="100%" stopColor="#3a2308" stopOpacity="0" />
+        <radialGradient id="jarvis-core-preview" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="#ffffff" />
+          <stop offset="22%" stopColor="#ffd9ec" />
+          <stop offset="55%" stopColor="#ff0080" />
+          <stop offset="100%" stopColor="#7928ca" stopOpacity="0" />
         </radialGradient>
-        <radialGradient id="jarvis-bloom-gradient" cx="50%" cy="50%" r="50%">
-          <stop offset="0%" stopColor="#bdf3ff" stopOpacity="0.9" />
-          <stop offset="100%" stopColor="#bdf3ff" stopOpacity="0" />
+        <radialGradient id="jarvis-core-ship" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="#ffffff" />
+          <stop offset="22%" stopColor="#ffeccc" />
+          <stop offset="55%" stopColor="#f9cb28" />
+          <stop offset="100%" stopColor="#ff4d4d" stopOpacity="0" />
         </radialGradient>
-        <radialGradient id="jarvis-bloom-gradient-amber" cx="50%" cy="50%" r="50%">
-          <stop offset="0%" stopColor="#ffd7a0" stopOpacity="0.9" />
-          <stop offset="100%" stopColor="#ffd7a0" stopOpacity="0" />
+        <radialGradient id="jarvis-bloom-develop" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="#00dfd8" stopOpacity="0.9" />
+          <stop offset="100%" stopColor="#00dfd8" stopOpacity="0" />
+        </radialGradient>
+        <radialGradient id="jarvis-bloom-preview" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="#ff0080" stopOpacity="0.9" />
+          <stop offset="100%" stopColor="#ff0080" stopOpacity="0" />
+        </radialGradient>
+        <radialGradient id="jarvis-bloom-ship" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="#f9cb28" stopOpacity="0.9" />
+          <stop offset="100%" stopColor="#f9cb28" stopOpacity="0" />
         </radialGradient>
         <filter id="jarvis-glow" x="-100%" y="-100%" width="300%" height="300%">
           <feGaussianBlur stdDeviation="3.5" result="blur" />
@@ -151,9 +164,19 @@ export function ReactorHUD({ phase }: { phase: Phase }) {
         </filter>
       </defs>
 
+      {/* Sonar waves — inert until 'speaking', when they radiate outward in a
+          staggered sequence so a reply reads as sound leaving the reactor. */}
+      <circle cx={CENTER} cy={CENTER} r={96} className="wave wave-1" />
+      <circle cx={CENTER} cy={CENTER} r={96} className="wave wave-2" />
+      <circle cx={CENTER} cy={CENTER} r={96} className="wave wave-3" />
+
       <g className="ring outer-dash">
         <circle cx={CENTER} cy={CENTER} r={188} fill="none" strokeDasharray="2 7" />
       </g>
+
+      {/* Scanner arc — inert until 'thinking', when a short bright segment
+          sweeps the rim like a radar head. */}
+      <circle cx={CENTER} cy={CENTER} r={180} className="scanner" />
 
       <TickRing radius={168} count={72} shortLen={5} longLen={11} longEvery={6} className="ring tick-ring-outer" />
 
@@ -170,11 +193,11 @@ export function ReactorHUD({ phase }: { phase: Phase }) {
 
       <circle cx={CENTER} cy={CENTER} r={88} fill="none" className="ring core-ring" />
 
-      <circle cx={CENTER} cy={CENTER} r={92} fill="url(#jarvis-bloom-gradient)" className="core-bloom" />
+      <circle cx={CENTER} cy={CENTER} r={92} className="core-bloom" />
 
       <IrisRing innerRadius={56} outerRadius={82} count={18} skewDeg={22} className="ring iris" />
 
-      <circle cx={CENTER} cy={CENTER} r={46} fill="url(#jarvis-core-gradient)" className="core-fill" />
+      <circle cx={CENTER} cy={CENTER} r={46} className="core-fill" />
 
       <polygon points={trianglePoints(32)} className="core-triangle" />
       <circle cx={CENTER} cy={CENTER} r={4.5} className="core-badge" />

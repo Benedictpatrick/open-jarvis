@@ -1,19 +1,29 @@
 @import "tailwindcss";
 
+/* ─────────────────────────────────────────────────────────────
+   Design tokens
+   Near-white canvas, ink text, a 200-step gray ladder for every
+   divider and border, and a three-pair brand gradient that is the
+   entire decorative system. The gradient lives at hero scale only —
+   here that means the dark reactor band and nowhere else.
+   ───────────────────────────────────────────────────────────── */
 :root {
-  --background: #08060a;
-  --foreground: #f1e9dc;
-  --jarvis-cyan: #4cd9ff;
-  --jarvis-cyan-dim: #1c5f77;
-  --jarvis-glow: rgba(76, 217, 255, 0.55);
-  --jarvis-amber: #ffb454;
-  --jarvis-amber-glow: rgba(255, 180, 84, 0.5);
-  --jarvis-gold: #d9a75c;
-  --jarvis-gold-dim: rgba(217, 167, 92, 0.35);
-  --jarvis-gold-glow: rgba(230, 180, 110, 0.4);
-  --surface-1: #120d09;
-  --surface-2: #1a130c;
-  --hairline: rgba(217, 167, 92, 0.16);
+  /* Brand gradient pairs */
+  --develop-start: #007cf0;
+  --develop-end: #00dfd8;
+  --preview-start: #7928ca;
+  --preview-end: #ff0080;
+  --ship-start: #ff4d4d;
+  --ship-end: #f9cb28;
+
+  /* Dark band (the polarity-flipped section that houses the reactor) */
+  --band: #171717;
+  --band-hairline: rgba(255, 255, 255, 0.11);
+  --band-body: rgba(255, 255, 255, 0.62);
+  --band-mute: rgba(255, 255, 255, 0.4);
+
+  --background: var(--band);
+  --foreground: #ffffff;
 }
 
 @theme inline {
@@ -23,31 +33,136 @@
   --font-mono: var(--font-geist-mono);
 }
 
+html,
 body {
-  background:
-    radial-gradient(ellipse 900px 600px at 50% 38%, #1c130a 0%, transparent 65%),
-    linear-gradient(180deg, #0c0906 0%, #08060a 55%, #030203 100%);
-  color: var(--foreground);
-  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
-  min-height: 100dvh;
-  position: relative;
+  height: 100%;
+  overflow: hidden;
 }
 
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  background-image: repeating-radial-gradient(
-    circle at 50% 40%,
-    rgba(217, 167, 92, 0.05) 0px,
-    rgba(217, 167, 92, 0.05) 1px,
-    transparent 1px,
-    transparent 84px
-  );
-  mask-image: radial-gradient(ellipse 75% 65% at 50% 40%, black 15%, transparent 78%);
+body {
+  background: var(--band);
+  color: #ffffff;
+  font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
 }
+
+::selection {
+  background: #ffffff;
+  color: var(--band);
+}
+
+/* One continuous dark surface, edge to edge. Every other element floats over
+   it — no bars, no dividers, nothing interrupting the field.
+   A flex child of the full-height body rather than a fixed-position layer:
+   it fills the viewport just the same, but absolutely-positioned children
+   resolve against it predictably, and it copes with mobile browser chrome and
+   the on-screen keyboard instead of fighting them. */
+.app-shell {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  /* `clip`, not `hidden`: a hidden box is still a scroll container, and the
+     browser scrolls it to bring a focused input into view — which shoved the
+     header off the top of the screen the moment you clicked the composer.
+     `clip` creates no scroll container, so nothing can displace the layout. */
+  overflow: clip;
+  background: var(--band);
+  --mic-level: 0;
+
+  /* A plain flex column: chrome, status, reactor, transcript, composer, each
+     owning its own band. Stacking these rather than layering absolutely
+     positioned siblings is what guarantees the text can never sit on top of
+     the reactor — the layout simply has nowhere for them to overlap. */
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+}
+
+/* ── Phase identity ──────────────────────────────────────────
+   Declared once on the shell so the arc, the status dot, the shockwave and
+   the mesh all read from the same source and can never drift apart. */
+.phase-idle {
+  --phase-accent: var(--develop-start);
+  --phase-hot: var(--develop-end);
+  --phase-ring: rgba(255, 255, 255, 0.42);
+  --phase-core: url(#jarvis-core-develop);
+  --phase-bloom: url(#jarvis-bloom-develop);
+}
+.phase-listening {
+  --phase-accent: var(--ship-end);
+  --phase-hot: #fff0cc;
+  --phase-ring: rgba(255, 236, 204, 0.68);
+  --phase-core: url(#jarvis-core-ship);
+  --phase-bloom: url(#jarvis-bloom-ship);
+}
+.phase-thinking {
+  --phase-accent: var(--preview-end);
+  --phase-hot: #ffd9ec;
+  --phase-ring: rgba(255, 217, 236, 0.6);
+  --phase-core: url(#jarvis-core-preview);
+  --phase-bloom: url(#jarvis-bloom-preview);
+}
+.phase-speaking {
+  --phase-accent: var(--develop-end);
+  --phase-hot: #d9fbf8;
+  --phase-ring: rgba(217, 251, 248, 0.72);
+  --phase-core: url(#jarvis-core-develop);
+  --phase-bloom: url(#jarvis-bloom-develop);
+}
+
+/* ── Mesh backdrop ──────────────────────────────────────────
+   The brand gradient at full-screen scale — the one decorative system. Each
+   phase gets its own layer; only opacity animates, so switching phases is a
+   real crossfade rather than a jump. */
+.mesh {
+  position: absolute;
+  inset: -20%;
+  pointer-events: none;
+  opacity: 0;
+  filter: blur(56px);
+  transition: opacity 0.7s ease;
+  animation: mesh-drift 18s ease-in-out infinite;
+}
+
+.mesh-idle {
+  background:
+    radial-gradient(38% 44% at 24% 30%, rgba(0, 124, 240, 0.55) 0%, transparent 70%),
+    radial-gradient(34% 40% at 76% 28%, rgba(0, 223, 216, 0.32) 0%, transparent 70%),
+    radial-gradient(40% 42% at 62% 78%, rgba(0, 124, 240, 0.3) 0%, transparent 70%);
+}
+.mesh-listening {
+  background:
+    radial-gradient(38% 44% at 26% 32%, rgba(255, 77, 77, 0.42) 0%, transparent 70%),
+    radial-gradient(36% 42% at 74% 26%, rgba(249, 203, 40, 0.45) 0%, transparent 70%),
+    radial-gradient(40% 42% at 56% 80%, rgba(255, 140, 60, 0.32) 0%, transparent 70%);
+}
+.mesh-thinking {
+  background:
+    radial-gradient(38% 44% at 22% 28%, rgba(121, 40, 202, 0.55) 0%, transparent 70%),
+    radial-gradient(36% 42% at 78% 30%, rgba(255, 0, 128, 0.42) 0%, transparent 70%),
+    radial-gradient(40% 44% at 60% 80%, rgba(121, 40, 202, 0.35) 0%, transparent 70%);
+}
+.mesh-speaking {
+  background:
+    radial-gradient(40% 46% at 28% 30%, rgba(0, 223, 216, 0.5) 0%, transparent 70%),
+    radial-gradient(36% 42% at 74% 30%, rgba(0, 124, 240, 0.45) 0%, transparent 70%),
+    radial-gradient(42% 44% at 54% 82%, rgba(0, 223, 216, 0.32) 0%, transparent 70%);
+}
+
+.phase-idle .mesh-idle,
+.phase-listening .mesh-listening,
+.phase-thinking .mesh-thinking,
+.phase-speaking .mesh-speaking {
+  opacity: 0.62;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mesh {
+    animation: none;
+  }
+}
+
+/* ── Animation ──────────────────────────────────────────────── */
 
 @keyframes spin-cw {
   from { transform: rotate(0deg); }
@@ -86,24 +201,254 @@ body::before {
   50%, 100% { opacity: 0; }
 }
 
+@keyframes mesh-drift {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(0, -2%, 0) scale(1.06); }
+}
+
+/* Idle: a slow, shallow breath — the reactor is alive but at rest. */
+@keyframes core-breathe {
+  0%, 100% { transform: scale(1); opacity: 0.78; }
+  50% { transform: scale(1.03); opacity: 0.92; }
+}
+
+/* Speaking: concentric wavefronts leaving the core, staggered so a reply
+   reads as sound travelling outward. */
+@keyframes sonar {
+  0% { transform: scale(0.62); opacity: 0; }
+  12% { opacity: 0.55; }
+  100% { transform: scale(2.1); opacity: 0; }
+}
+
+/* Thinking: the rim breathes in and out under the scanner sweep. */
+@keyframes rim-search {
+  0%, 100% { scale: 1; opacity: 0.5; }
+  50% { scale: 1.035; opacity: 0.85; }
+}
+
+/* ── Nav ────────────────────────────────────────────────────── */
+
+.chrome-top {
+  position: relative;
+  z-index: 5;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: max(18px, env(safe-area-inset-top)) 24px 4px;
+}
+
+.nav-brand {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
+  color: #ffffff;
+}
+
+.chrome-clock {
+  font-family: var(--font-mono), monospace;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--band-mute);
+}
+
+/* 6px radius at nav scale; the 100px pill is reserved for marketing-scale
+   CTAs. The two scales never appear on the same screen. */
+.nav-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.nav-btn-ghost {
+  color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--band-hairline);
+  backdrop-filter: blur(8px);
+}
+.nav-btn-ghost:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* ── Reactor band ───────────────────────────────────────────── */
+
+/* The polarity-flipped dark section. It exists because the reactor is a
+   light source: its drop-shadow glow and the core's screen blend mode
+   both need darkness, and would wash out to nothing on the white canvas.
+   Padding is generous so the 30px glow stays inside the band rather than
+   clipping at the edge. */
+/* Shockwave: one ring leaving the core the instant the phase flips, so the
+   transition is catchable from the corner of your eye. */
+@keyframes shock {
+  0% { transform: scale(0.45); opacity: 0.75; }
+  100% { transform: scale(2.8); opacity: 0; }
+}
+
+.shockwave {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: clamp(200px, 46vmin, 340px);
+  height: clamp(200px, 46vmin, 340px);
+  margin-left: calc(clamp(200px, 46vmin, 340px) / -2);
+  margin-top: calc(clamp(200px, 46vmin, 340px) / -2);
+  border-radius: 9999px;
+  border: 2px solid var(--phase-accent);
+  pointer-events: none;
+  animation: shock 0.75s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shockwave {
+    display: none;
+  }
+}
+
+/* With a conversation on screen the stage splits into two bands: the reactor
+   owns the upper one, the transcript the lower. Nothing is layered over the
+   arc, so no text ever sits on top of it. */
+.app-shell {
+  --sheet-height: 0px;
+}
+.app-shell.has-sheet {
+  --sheet-height: min(34vh, 300px);
+}
+
+/* The reactor takes whatever height is left over — the largest band on
+   screen, and the only one that flexes. */
+.stage-core {
+  position: relative;
+  z-index: 1;
+  /* Basis 0, not auto: the reactor band takes exactly the space left over
+     after the fixed bands, rather than demanding its content's height and
+     pushing the column past the viewport. */
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 24px;
+}
+
+.stage-status {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 4px 24px 0;
+  pointer-events: none;
+}
+
+.stage-readout {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding-bottom: 8px;
+  pointer-events: none;
+}
+
+/* Once the sheet is up it owns the bottom of the stage — this readout is
+   decorative and would only sit behind text. */
+.has-sheet .stage-readout {
+  display: none;
+}
+
+/* The brand mesh gradient, used as atmospheric backdrop at hero scale —
+   the one place decoration is allowed. Never miniaturised, never reduced
+   to a single stop. */
+.reactor-stage::before {
+  content: "";
+  position: absolute;
+  inset: -20%;
+  pointer-events: none;
+  background:
+    radial-gradient(38% 46% at 22% 30%, rgba(0, 124, 240, 0.5) 0%, transparent 70%),
+    radial-gradient(34% 42% at 78% 26%, rgba(121, 40, 202, 0.42) 0%, transparent 70%),
+    radial-gradient(40% 44% at 66% 76%, rgba(255, 0, 128, 0.3) 0%, transparent 70%),
+    radial-gradient(36% 40% at 30% 78%, rgba(0, 223, 216, 0.28) 0%, transparent 70%),
+    radial-gradient(30% 34% at 50% 96%, rgba(249, 203, 40, 0.22) 0%, transparent 70%);
+  filter: blur(48px);
+  opacity: 0.5;
+  animation: mesh-drift 18s ease-in-out infinite;
+}
+
+.reactor-stage > * {
+  position: relative;
+  z-index: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reactor-stage::before {
+    animation: none;
+  }
+}
+
 .reactor-tilt {
   transform-style: preserve-3d;
   transition: transform 0.2s ease-out;
   will-change: transform;
 }
 
+/* Fills the height of whatever band it has, capped so it never becomes
+   cartoonishly large on a tall screen. Because it is sized from its own
+   band rather than the viewport, opening the transcript shrinks it just
+   enough to fit instead of pushing it off the top. */
+/* Sized explicitly rather than as a percentage of its band: a percentage
+   height against an indefinite flex parent silently falls back to the
+   content size, which is what let the column overflow the viewport. */
 .reactor {
   position: relative;
-  width: clamp(190px, 58vmin, 320px);
-  height: clamp(190px, 58vmin, 320px);
+  width: clamp(200px, 46vmin, 340px);
+  height: clamp(200px, 46vmin, 340px);
+  transition: width 0.45s cubic-bezier(0.2, 0.8, 0.2, 1), height 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
+/* In conversation the transcript needs real estate, so the arc gives some
+   back — measured in viewport height so the two always add up to less than
+   the screen. It stays the biggest single element, not a status chip. */
+.has-sheet .reactor {
+  width: clamp(140px, 30vh, 300px);
+  height: clamp(140px, 30vh, 300px);
+}
+
+.reactor-tilt {
+  min-height: 0;
+  flex: 0 0 auto;
+}
+
+/* ── Reactor ────────────────────────────────────────────────── */
+
+/* Geometry and motion are unchanged from the original build. Only the
+   palette moved: each phase now takes one of the three brand gradient
+   pairs, set once here as custom properties and consumed below. */
 .reactor-svg {
   width: 100%;
   height: 100%;
   overflow: visible;
-  transition: filter 0.4s ease;
-  filter: drop-shadow(0 0 10px rgba(76, 217, 255, 0.25));
+  transition: filter 0.4s ease, opacity 0.45s ease;
+  /* Every layer reads from the shell-level phase tokens, so nothing can be
+     left behind on a phase change. */
+  --reactor-ring: var(--phase-ring);
+  --reactor-accent: var(--phase-accent);
+  --reactor-hot: var(--phase-hot);
+  --reactor-core: var(--phase-core);
+  --reactor-bloom: var(--phase-bloom);
 }
 
 .reactor-svg .ring {
@@ -111,28 +456,31 @@ body::before {
   transform-origin: 200px 200px;
 }
 
-/* Default chrome (housing, ticks, structural rings) reads as warm metal;
-   only the core itself (the actual power source) stays cool cyan-white. */
+/* Housing (ticks, dashes, structural rings) reads as neutral chrome; the
+   core is where the phase colour actually lives. */
 .reactor-svg line,
 .reactor-svg rect,
 .reactor-svg circle {
-  stroke: var(--jarvis-gold);
+  stroke: var(--reactor-ring);
   fill: none;
+  transition: stroke 0.4s ease;
 }
 
 .reactor-svg .segments rect {
-  fill: var(--jarvis-gold);
+  fill: var(--reactor-accent);
   stroke: none;
+  transition: fill 0.4s ease;
 }
 
 .reactor-svg .core-ring {
+  stroke: var(--reactor-accent);
   stroke-width: 2.5;
   opacity: 0.85;
   filter: url(#jarvis-glow);
 }
 
 .reactor-svg .core-bloom {
-  fill: url(#jarvis-bloom-gradient);
+  fill: var(--reactor-bloom);
   stroke: none;
   transform-box: fill-box;
   transform-origin: center;
@@ -142,17 +490,18 @@ body::before {
 }
 
 .reactor-svg .iris polygon {
-  fill: var(--jarvis-gold);
-  stroke: rgba(10, 6, 3, 0.65);
+  fill: var(--reactor-accent);
+  stroke: rgba(23, 23, 23, 0.7);
   stroke-width: 0.75;
+  transition: fill 0.4s ease;
 }
 .reactor-svg .iris {
-  opacity: 0.6;
+  opacity: 0.55;
   animation: spin-cw 70s linear infinite;
 }
 
 .reactor-svg .core-fill {
-  fill: url(#jarvis-core-gradient);
+  fill: var(--reactor-core);
   stroke: none;
   filter: url(#jarvis-glow);
   transform-box: fill-box;
@@ -163,11 +512,12 @@ body::before {
 
 .reactor-svg .core-triangle {
   fill: none;
-  stroke: #eafcff;
+  stroke: var(--reactor-hot);
   stroke-width: 2.5;
   stroke-linejoin: round;
   filter: url(#jarvis-glow);
   opacity: 0.95;
+  transition: stroke 0.4s ease;
 }
 
 .reactor-svg .core-badge {
@@ -177,33 +527,66 @@ body::before {
 }
 
 .reactor-svg .core-label-plate {
-  fill: rgba(10, 6, 3, 0.55);
-  stroke: var(--hairline);
+  fill: rgba(0, 0, 0, 0.4);
+  stroke: var(--reactor-accent);
   stroke-width: 1;
+  opacity: 0.55;
+  transition: stroke 0.4s ease;
 }
 
 .reactor-svg .core-text {
-  fill: #f3e6cf;
+  fill: var(--reactor-hot);
   font-family: var(--font-mono), monospace;
   font-size: 13px;
   letter-spacing: 2.5px;
-  opacity: 0.85;
+  stroke: none;
+  transition: fill 0.4s ease;
 }
 
 .reactor-svg .outer-dash circle,
 .reactor-svg .dash-mid circle {
   stroke-width: 1.5;
-  opacity: 0.7;
+  opacity: 0.55;
   filter: url(#jarvis-glow);
 }
 
 .reactor-svg .tick-ring-outer line,
 .reactor-svg .tick-ring-inner line {
-  opacity: 0.75;
+  opacity: 0.6;
 }
 
 .reactor-svg .segments {
   opacity: 0.85;
+}
+
+/* Scanner arc and sonar waves sit inert at zero opacity until their phase
+   activates them, so no phase pays for another phase's motion. */
+.reactor-svg .scanner {
+  fill: none;
+  stroke: var(--reactor-accent);
+  stroke-width: 4;
+  stroke-linecap: round;
+  /* circumference at r=180 is ~1131; a 110-unit dash is a ~35° head */
+  stroke-dasharray: 110 1021;
+  opacity: 0;
+  transform-box: view-box;
+  transform-origin: 200px 200px;
+  filter: url(#jarvis-glow);
+}
+
+.reactor-svg .wave {
+  fill: none;
+  stroke: var(--reactor-accent);
+  stroke-width: 2;
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* Ring scale uses the standalone `scale` property so it composes with the
+   spin animations already occupying `transform`. */
+.reactor-svg .ring {
+  transition: scale 0.55s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 /* Independent ring rotation */
@@ -213,56 +596,105 @@ body::before {
 .reactor-svg .dash-mid { animation: spin-ccw 28s linear infinite; }
 .reactor-svg .tick-ring-inner { animation: spin-cw 19s linear infinite; }
 
-/* Phase modifiers */
+/* Phase palette. Three gradient pairs across four phases means one pair
+   repeats — it goes to idle/speaking, which are never adjacent, so every
+   transition you actually see is a hue change. */
+/* ── IDLE — at rest. Slow breath, rings drifting lazily. ── */
 .reactor-svg.phase-idle {
-  filter: drop-shadow(0 0 10px rgba(76, 217, 255, 0.22));
+  filter: drop-shadow(0 0 14px rgba(0, 124, 240, 0.3));
 }
-.reactor-svg.phase-idle .core-fill { opacity: 0.75; }
+.reactor-svg.phase-idle .core-fill,
+.reactor-svg.phase-idle .core-bloom {
+  animation: core-breathe 5.2s ease-in-out infinite;
+}
+.reactor-svg.phase-idle .outer-dash { animation-duration: 90s; }
+.reactor-svg.phase-idle .tick-ring-outer { animation-duration: 64s; }
+.reactor-svg.phase-idle .segments { animation-duration: 48s; }
+.reactor-svg.phase-idle .dash-mid { animation-duration: 56s; }
+.reactor-svg.phase-idle .tick-ring-inner { animation-duration: 38s; }
 
-/* Listening (recording) surges the core and its immediate machinery to
-   amber — the housing itself stays gold, only the power source visibly
-   reacts, like the reactor is drawing more current while you talk. */
+/* ── LISTENING — the housing opens up and the core tracks your voice. ── */
 .reactor-svg.phase-listening {
-  filter: drop-shadow(0 0 22px var(--jarvis-amber-glow));
+  filter: drop-shadow(0 0 calc(18px + var(--mic-level, 0) * 34px) rgba(249, 203, 40, calc(0.4 + var(--mic-level, 0) * 0.4)));
 }
-.reactor-svg.phase-listening .segments rect {
-  fill: var(--jarvis-amber);
-}
-.reactor-svg.phase-listening .core-fill {
-  fill: url(#jarvis-core-gradient-amber);
-}
+/* Rings pull outward, each a little less than the one inside it. */
+.reactor-svg.phase-listening .outer-dash { scale: calc(1.075 + var(--mic-level, 0) * 0.05); }
+.reactor-svg.phase-listening .tick-ring-outer { scale: calc(1.055 + var(--mic-level, 0) * 0.04); }
+.reactor-svg.phase-listening .segments { scale: calc(1.04 + var(--mic-level, 0) * 0.03); }
+.reactor-svg.phase-listening .dash-mid { scale: calc(1.025 + var(--mic-level, 0) * 0.02); }
+.reactor-svg.phase-listening .tick-ring-inner { scale: calc(1.012 + var(--mic-level, 0) * 0.015); }
+/* The canned pulse is replaced by live amplitude — the core swells with the
+   actual sound reaching the mic, which is real feedback rather than a loop. */
+.reactor-svg.phase-listening .core-fill,
 .reactor-svg.phase-listening .core-bloom {
-  fill: url(#jarvis-bloom-gradient-amber);
+  animation: none;
+  transform: scale(calc(1 + var(--mic-level, 0) * 0.3));
+  transition: transform 0.12s ease-out;
 }
-.reactor-svg.phase-listening .iris polygon {
-  fill: var(--jarvis-amber);
-}
-.reactor-svg.phase-listening .core-text {
-  fill: #ffe6bf;
-}
-.reactor-svg.phase-listening .core-triangle {
-  stroke: #fff3e0;
-}
-.reactor-svg.phase-listening .tick-ring-inner { animation-duration: 6s; }
-.reactor-svg.phase-listening .dash-mid { animation-duration: 10s; }
-.reactor-svg.phase-listening .iris { animation-duration: 24s; opacity: 0.8; }
+/* All five rings ramp together — listening runs noticeably quicker than idle. */
+.reactor-svg.phase-listening .outer-dash { animation-duration: 26s; }
+.reactor-svg.phase-listening .tick-ring-outer { animation-duration: 18s; }
+.reactor-svg.phase-listening .segments { animation-duration: 13s; }
+.reactor-svg.phase-listening .dash-mid { animation-duration: 14s; }
+.reactor-svg.phase-listening .tick-ring-inner { animation-duration: 9s; }
+.reactor-svg.phase-listening .iris { animation-duration: 26s; opacity: 0.85; }
 
+/* ── THINKING — fast counter-spin under a sweeping scanner head. ── */
 .reactor-svg.phase-thinking {
-  filter: drop-shadow(0 0 18px rgba(76, 217, 255, 0.45));
+  filter: drop-shadow(0 0 22px rgba(255, 0, 128, 0.45));
 }
+.reactor-svg.phase-thinking .scanner {
+  opacity: 1;
+  animation: spin-cw 1.5s linear infinite;
+}
+.reactor-svg.phase-thinking .outer-dash { animation: rim-search 2.2s ease-in-out infinite; }
 .reactor-svg.phase-thinking .segments rect { animation: segment-flicker 1.1s ease-in-out infinite; }
-.reactor-svg.phase-thinking .tick-ring-outer { animation-duration: 8s; }
+/* The fastest state — everything spins hard while it works. */
+.reactor-svg.phase-thinking .tick-ring-outer { animation-duration: 5s; }
+.reactor-svg.phase-thinking .segments { animation-duration: 3.5s; }
+.reactor-svg.phase-thinking .dash-mid { animation-duration: 4s; }
+.reactor-svg.phase-thinking .tick-ring-inner { animation-duration: 3s; }
 .reactor-svg.phase-thinking .core-fill { animation-duration: 1.1s; }
 .reactor-svg.phase-thinking .core-bloom { animation-duration: 1.1s; }
-.reactor-svg.phase-thinking .iris { animation-duration: 10s; opacity: 0.8; }
+.reactor-svg.phase-thinking .iris { animation-duration: 8s; opacity: 0.85; }
 
+/* ── SPEAKING — wavefronts radiate outward in a staggered sequence. ── */
 .reactor-svg.phase-speaking {
-  filter: drop-shadow(0 0 30px rgba(76, 217, 255, 0.7));
+  filter: drop-shadow(0 0 32px rgba(0, 223, 216, 0.6));
 }
+.reactor-svg.phase-speaking .wave {
+  animation: sonar 2.4s cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
+}
+.reactor-svg.phase-speaking .wave-2 { animation-delay: 0.8s; }
+.reactor-svg.phase-speaking .wave-3 { animation-delay: 1.6s; }
 .reactor-svg.phase-speaking .core-fill { animation: core-pulse-strong 0.85s ease-in-out infinite; }
 .reactor-svg.phase-speaking .core-bloom { animation: core-pulse-strong 0.85s ease-in-out infinite; }
 .reactor-svg.phase-speaking .core-ring { opacity: 1; }
+.reactor-svg.phase-speaking .outer-dash { animation-duration: 34s; }
+.reactor-svg.phase-speaking .tick-ring-outer { animation-duration: 22s; }
+.reactor-svg.phase-speaking .segments { animation-duration: 16s; }
+.reactor-svg.phase-speaking .dash-mid { animation-duration: 18s; }
+.reactor-svg.phase-speaking .tick-ring-inner { animation-duration: 12s; }
 .reactor-svg.phase-speaking .iris { animation-duration: 14s; opacity: 0.9; }
+
+/* Motion is decorative here — the phase label and colour still carry the
+   state for anyone who prefers reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .reactor-svg *,
+  .reactor-svg {
+    animation: none !important;
+  }
+}
+
+/* Reading takes priority: the arc keeps moving but steps back so the eye
+   lands on the text. It returns to full glow whenever it's actually talking. */
+.has-sheet .reactor-svg {
+  opacity: 0.6;
+}
+.has-sheet.phase-speaking .reactor-svg,
+.has-sheet.phase-listening .reactor-svg {
+  opacity: 1;
+}
 
 .mic-button {
   user-select: none;
@@ -270,179 +702,340 @@ body::before {
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
   transition: transform 0.15s ease;
+  border-radius: 9999px;
 }
 .mic-button:active {
   transform: scale(0.97);
 }
-
-/* HUD corner brackets framing the viewport */
-.hud-bracket {
-  position: fixed;
-  width: 22px;
-  height: 22px;
-  border: 1px solid var(--hairline);
-  opacity: 0.6;
-  pointer-events: none;
-  z-index: 1;
+.mic-button:focus-visible {
+  outline: 2px solid var(--develop-end);
+  outline-offset: 6px;
 }
-.hud-bracket.tl { top: 14px; left: 14px; border-right: none; border-bottom: none; }
-.hud-bracket.tr { top: 14px; right: 14px; border-left: none; border-bottom: none; }
-.hud-bracket.bl { bottom: 14px; left: 14px; border-right: none; border-top: none; }
-.hud-bracket.br { bottom: 14px; right: 14px; border-left: none; border-top: none; }
 
-.hud-readout {
+/* ── Readouts inside the dark band ──────────────────────────── */
+
+.band-readout {
   font-family: var(--font-mono), monospace;
   font-size: 10px;
   letter-spacing: 0.12em;
-  color: rgba(225, 200, 160, 0.4);
+  color: var(--band-mute);
   line-height: 1.5;
 }
 
-.hud-dot {
+.band-dot {
   display: inline-block;
   width: 5px;
   height: 5px;
   border-radius: 9999px;
-  background: var(--jarvis-gold);
-  box-shadow: 0 0 6px var(--jarvis-gold-glow);
+  background: var(--phase-accent);
+  box-shadow: 0 0 8px var(--phase-accent);
+  transition: background-color 0.4s ease, box-shadow 0.4s ease;
 }
 
-.hud-caret {
-  display: inline-block;
-  width: 0.5em;
-  color: var(--jarvis-gold);
-  animation: blink 1.1s step-start infinite;
+.phase-label {
+  font-family: var(--font-mono), monospace;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.75);
 }
 
-/* Terminal feed: dialogue rendered as a scrolling console log (no card, no
-   border, no bubble, no role label) — a ">" prompt marks what you typed,
-   plain monospace text is the reply, fading at the edges as it scrolls. */
-.terminal-feed {
-  mask-image: linear-gradient(to bottom, transparent 0%, black 10%, black 90%, transparent 100%);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 10%, black 90%, transparent 100%);
-  scrollbar-width: none;
-}
-.terminal-feed::-webkit-scrollbar {
-  display: none;
+.phase-row {
+  margin-top: 0;
 }
 
-/* Faint CRT scanlines over the whole scene for terminal authenticity —
-   subtle enough not to fight the reactor's own glow. */
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
+/* ── Boot sequence ──────────────────────────────────────────── */
+
+@keyframes boot-line-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes reactor-spin-up {
+  from { opacity: 0; transform: scale(0.82); filter: brightness(0.3); }
+  to { opacity: 1; transform: scale(1); filter: brightness(1); }
+}
+
+.boot-lines {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.boot-line {
+  font-family: var(--font-mono), monospace;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--phase-accent);
+  animation: boot-line-in 0.3s ease both;
+}
+
+/* The reactor powers up rather than simply appearing. Rings spin fast and
+   settle, matching the status lines ticking through. */
+.is-booting .reactor-tilt {
+  animation: reactor-spin-up 1.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.is-booting .reactor-svg .outer-dash { animation-duration: 2.4s; }
+.is-booting .reactor-svg .tick-ring-outer { animation-duration: 1.8s; }
+.is-booting .reactor-svg .segments { animation-duration: 1.4s; }
+.is-booting .reactor-svg .dash-mid { animation-duration: 1.6s; }
+.is-booting .reactor-svg .tick-ring-inner { animation-duration: 1.1s; }
+.is-booting .composer-float,
+.is-booting .stage-readout {
+  opacity: 0;
   pointer-events: none;
-  z-index: 4;
-  background-image: repeating-linear-gradient(
-    to bottom,
-    rgba(0, 0, 0, 0.2) 0px,
-    rgba(0, 0, 0, 0.2) 1px,
-    transparent 1px,
-    transparent 3px
-  );
-  opacity: 0.15;
+}
+.composer-float,
+.stage-readout {
+  transition: opacity 0.5s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-booting .reactor-tilt {
+    animation: none;
+  }
+}
+
+.band-status {
+  margin-top: 8px;
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+  color: var(--band-body);
+  min-height: 20px;
+  /* The parent turns pointer events off so it never blocks the reactor, but
+     this line carries the mic-error text — it has to stay selectable. */
+  pointer-events: auto;
+  user-select: text;
+}
+
+.band-status.is-caption {
+  color: #ffffff;
+}
+
+/* ── Transcript ─────────────────────────────────────────────── */
+
+@keyframes sheet-in {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* The sheet floats over the lower half of the stage. It is translucent and
+   blurred so the reactor stays visible glowing behind the conversation
+   rather than being pushed off screen by it. */
+/* Sits in its own band between the reactor and the composer — never over the
+   arc, and never behind the input. */
+.transcript-sheet {
+  position: relative;
+  z-index: 3;
+  /* Fixed basis plus min-height:0 — without the latter a flex item refuses to
+     shrink below its content, so a long conversation would push the whole
+     column out of the viewport instead of scrolling inside this band. */
+  flex: 0 0 var(--sheet-height);
+  height: var(--sheet-height);
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 20px max(24px, calc((100% - 720px) / 2));
+  /* A soft top edge so the band reads as a surface without a hard rule
+     across the screen. */
+  background: linear-gradient(180deg, rgba(10, 10, 10, 0) 0%, rgba(10, 10, 10, 0.55) 12%, rgba(10, 10, 10, 0.72) 100%);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  animation: sheet-in 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+.transcript-sheet::-webkit-scrollbar {
+  width: 6px;
+}
+.transcript-sheet::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 9999px;
+}
+
+.sheet-eyebrow {
+  font-family: var(--font-mono), monospace;
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.42);
+}
+
+/* Text sits on the dark stage now, so the transcript inverts to light-on-dark. */
+.msg-user {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 500;
+  color: #ffffff;
+}
+
+.msg-assistant {
+  font-size: 16px;
+  line-height: 24px;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+/* Tool-call tag: technical metadata, so it takes the mono voice. */
+.tool-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.55);
+  font-family: var(--font-mono), monospace;
+  font-size: 11px;
+  line-height: 16px;
 }
 
 .message-enter {
   animation: fade-up 0.35s ease both;
 }
 
-/* Floating HUD info panel — a "pulled up display" for openTab results,
-   materializing over the scene rather than relying on a real browser tab
-   (which popup blockers usually kill before it ever appears). */
+/* ── Composer ───────────────────────────────────────────────── */
+
+/* A floating pill rather than a docked bar — nothing draws a line across the
+   dark field. */
+.composer-float {
+  position: relative;
+  z-index: 5;
+  flex: 0 0 auto;
+  padding: 12px 16px max(16px, env(safe-area-inset-bottom));
+  display: flex;
+  justify-content: center;
+}
+
+.composer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  max-width: 640px;
+  height: 52px;
+  padding: 0 18px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--band-hairline);
+  border-radius: 9999px;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+.composer:focus-within {
+  border-color: var(--phase-accent);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.composer-caret {
+  display: inline-block;
+  width: 0.5em;
+  font-family: var(--font-mono), monospace;
+  color: var(--phase-accent);
+  animation: blink 1.1s step-start infinite;
+}
+
+.composer-input {
+  width: 100%;
+  background: transparent;
+  font-size: 16px;
+  line-height: 24px;
+  color: #ffffff;
+}
+.composer-input::placeholder {
+  color: rgba(255, 255, 255, 0.38);
+}
+.composer-input:focus {
+  outline: none;
+}
+
+/* ── Info panel (openTab results) ───────────────────────────── */
+
 @keyframes panel-in {
-  from { opacity: 0; transform: translateX(-50%) translateY(-10px) scale(0.96); }
+  from { opacity: 0; transform: translateX(-50%) translateY(-10px) scale(0.98); }
   to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
 }
 
 .info-panel {
   position: fixed;
-  top: max(64px, calc(env(safe-area-inset-top) + 56px));
+  top: max(80px, calc(env(safe-area-inset-top) + 72px));
   left: 50%;
   transform: translateX(-50%);
   z-index: 50;
-  width: min(360px, calc(100vw - 32px));
-  padding: 14px 18px 14px 16px;
-  background: linear-gradient(180deg, rgba(18, 13, 9, 0.94) 0%, rgba(9, 6, 4, 0.97) 100%);
-  border: 1px solid var(--hairline);
-  box-shadow:
-    0 12px 40px rgba(0, 0, 0, 0.55),
-    0 0 24px rgba(217, 167, 92, 0.1);
-  backdrop-filter: blur(6px);
+  width: min(380px, calc(100vw - 32px));
+  padding: 20px;
+  background: rgba(28, 28, 28, 0.86);
+  border: 1px solid var(--band-hairline);
+  border-radius: 12px;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.6);
   animation: panel-in 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
-.info-panel-corner {
-  position: absolute;
-  width: 12px;
-  height: 12px;
-  border: 1px solid var(--jarvis-gold-dim);
-  opacity: 0.7;
-  pointer-events: none;
-}
-.info-panel-corner.tl { top: -1px; left: -1px; border-right: none; border-bottom: none; }
-.info-panel-corner.tr { top: -1px; right: -1px; border-left: none; border-bottom: none; }
-.info-panel-corner.bl { bottom: -1px; left: -1px; border-right: none; border-top: none; }
-.info-panel-corner.br { bottom: -1px; right: -1px; border-left: none; border-top: none; }
-
 .info-panel-close {
   position: absolute;
-  top: 4px;
-  right: 8px;
-  font-family: var(--font-mono), monospace;
-  font-size: 15px;
+  top: 10px;
+  right: 10px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  font-size: 16px;
   line-height: 1;
-  color: rgba(217, 167, 92, 0.4);
-  background: none;
-  border: none;
+  color: rgba(255, 255, 255, 0.5);
   cursor: pointer;
-  padding: 6px;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 .info-panel-close:hover {
-  color: var(--jarvis-amber);
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
 }
 
 .info-panel-title {
-  font-family: var(--font-mono), monospace;
-  font-size: 12.5px;
-  letter-spacing: 0.02em;
-  color: var(--jarvis-gold);
-  padding-right: 18px;
-  line-height: 1.4;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  letter-spacing: -0.4px;
+  color: #ffffff;
+  padding-right: 28px;
 }
 
 .info-panel-desc {
   margin-top: 6px;
-  font-size: 12px;
-  line-height: 1.55;
-  color: rgba(230, 210, 180, 0.6);
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+  color: rgba(255, 255, 255, 0.7);
 }
 
 .info-panel-link {
   display: inline-block;
-  margin-top: 10px;
+  margin-top: 14px;
   font-family: var(--font-mono), monospace;
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  color: rgba(217, 167, 92, 0.75);
-  text-decoration: underline;
-  text-decoration-color: rgba(217, 167, 92, 0.3);
-  text-underline-offset: 2px;
+  font-size: 12px;
+  color: var(--phase-accent);
 }
 .info-panel-link:hover {
-  color: var(--jarvis-amber);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
-/* Settings panel: a bigger modal HUD card (backdrop + centered dialog),
-   consolidating wake-word, session, and live provider-limit telemetry
-   that used to be scattered across small corner readouts. */
+/* ── Settings modal ─────────────────────────────────────────── */
+
 .settings-overlay {
   position: fixed;
   inset: 0;
   z-index: 60;
-  background: rgba(3, 2, 1, 0.65);
-  backdrop-filter: blur(2px);
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -451,37 +1044,38 @@ body::after {
 }
 
 @keyframes settings-panel-in {
-  from { opacity: 0; transform: translateY(-10px) scale(0.97); }
+  from { opacity: 0; transform: translateY(-8px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 .settings-panel {
   position: relative;
-  width: min(420px, 100%);
-  max-height: min(560px, 85vh);
+  width: min(440px, 100%);
+  max-height: min(600px, 85vh);
   overflow-y: auto;
-  padding: 22px 20px 20px;
-  background: linear-gradient(180deg, rgba(18, 13, 9, 0.97) 0%, rgba(9, 6, 4, 0.99) 100%);
-  border: 1px solid var(--hairline);
-  box-shadow:
-    0 20px 60px rgba(0, 0, 0, 0.6),
-    0 0 30px rgba(217, 167, 92, 0.1);
+  padding: 32px;
+  background: rgba(24, 24, 24, 0.92);
+  border: 1px solid var(--band-hairline);
+  border-radius: 12px;
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  box-shadow: 0 32px 64px rgba(0, 0, 0, 0.7);
   animation: settings-panel-in 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both;
   scrollbar-width: thin;
-  scrollbar-color: rgba(217, 167, 92, 0.3) transparent;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
 }
 
 .settings-title {
-  font-family: var(--font-mono), monospace;
-  font-size: 13px;
-  letter-spacing: 0.15em;
-  text-transform: uppercase;
-  color: var(--jarvis-gold);
-  margin-bottom: 18px;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 32px;
+  letter-spacing: -0.96px;
+  color: #ffffff;
+  margin-bottom: 24px;
 }
 
 .settings-section {
-  margin-bottom: 18px;
+  margin-bottom: 32px;
 }
 .settings-section:last-child {
   margin-bottom: 0;
@@ -489,94 +1083,133 @@ body::after {
 
 .hud-panel-title {
   font-family: var(--font-mono), monospace;
-  font-size: 10px;
-  letter-spacing: 0.18em;
+  font-size: 11px;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--jarvis-cyan);
-  opacity: 0.6;
-  margin-bottom: 8px;
+  color: rgba(255, 255, 255, 0.4);
+  margin-bottom: 12px;
 }
 
 .hud-panel-note {
-  font-family: var(--font-mono), monospace;
-  font-size: 11px;
-  letter-spacing: 0.02em;
-  line-height: 1.6;
-  color: rgba(230, 210, 180, 0.75);
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+  color: rgba(255, 255, 255, 0.72);
 }
 
 .settings-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-family: var(--font-mono), monospace;
-  font-size: 11.5px;
-  color: rgba(230, 210, 180, 0.75);
-  padding: 5px 0;
+  gap: 16px;
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+  color: #ffffff;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--band-hairline);
+}
+.settings-row:last-child {
+  border-bottom: none;
 }
 
+.settings-row-note {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: 0;
+  color: rgba(255, 255, 255, 0.42);
+}
+
+/* The toggle carries real fill state rather than just a tinted label —
+   an ON that reads as ON at a glance matters here, because a control
+   showing ON while recognition was dead was the original bug. */
 .settings-toggle {
-  font-family: var(--font-mono), monospace;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--jarvis-amber);
-  background: rgba(217, 167, 92, 0.08);
-  border: 1px solid var(--hairline);
-  padding: 3px 10px;
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
   cursor: pointer;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--band-hairline);
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 .settings-toggle:hover {
-  background: rgba(217, 167, 92, 0.16);
+  border-color: rgba(255, 255, 255, 0.28);
+  color: #ffffff;
+}
+
+.settings-toggle[data-state="on"] {
+  background: #ffffff;
+  color: var(--band);
+  border-color: #ffffff;
+}
+.settings-toggle[data-state="on"]:hover {
+  background: #ffffff;
+  color: var(--band);
 }
 
 .settings-toggle-disabled {
   font-family: var(--font-mono), monospace;
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  color: rgba(217, 167, 92, 0.3);
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.35);
 }
 
 .settings-limits {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 16px;
 }
 
 .settings-limit-row {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  font-family: var(--font-mono), monospace;
-  font-size: 11px;
-  color: rgba(230, 210, 180, 0.75);
+  gap: 4px;
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+  color: #ffffff;
 }
 .settings-limit-row > span:first-child {
-  color: rgba(217, 167, 92, 0.55);
-  font-size: 10px;
-  letter-spacing: 0.05em;
+  font-family: var(--font-mono), monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
 }
 
 .settings-limit-error {
-  color: rgba(217, 167, 92, 0.4);
-  font-style: italic;
+  color: #ff6369;
+  font-size: 13px;
 }
 
 .settings-limit-note {
-  color: rgba(217, 167, 92, 0.45);
-  font-size: 10.5px;
-  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 13px;
+  line-height: 18px;
 }
 
 .usage-bar {
-  height: 3px;
-  background: rgba(217, 167, 92, 0.12);
+  height: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 9999px;
   overflow: hidden;
-  margin-top: 2px;
+  margin-top: 4px;
 }
 .usage-bar-fill {
   height: 100%;
-  background: var(--jarvis-amber);
-  opacity: 0.7;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, var(--develop-start), var(--develop-end));
+}
+
+.info-panel-close,
+.settings-toggle,
+.nav-btn {
+  -webkit-tap-highlight-color: transparent;
 }

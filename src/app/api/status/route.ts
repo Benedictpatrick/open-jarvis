@@ -1,4 +1,5 @@
-import { getDb, getProfileName } from '@/lib/db';
+import { getDb, getProfile } from '@/lib/db';
+import { readUserId } from '@/lib/identity';
 
 const NEON_FREE_STORAGE_BYTES = 0.5 * 1024 * 1024 * 1024;
 const NEON_FREE_COMPUTE_HOURS_PER_MONTH = 100;
@@ -50,8 +51,14 @@ async function getNeonStorage(): Promise<{ usedBytes: number; capBytes: number; 
   }
 }
 
-export async function GET() {
-  const [groq, neon, founderName] = await Promise.all([getGroqLimits(), getNeonStorage(), getProfileName()]);
+export async function GET(request: Request) {
+  const userId = readUserId(request);
+  const [groq, neon, profile] = await Promise.all([
+    getGroqLimits(),
+    getNeonStorage(),
+    userId ? getProfile(userId) : Promise.resolve(null),
+  ]);
+  const founderName = profile?.name ?? null;
 
   const phoneControlConfigured = Boolean(process.env.JOIN_API_KEY && process.env.JOIN_DEVICE_ID);
 

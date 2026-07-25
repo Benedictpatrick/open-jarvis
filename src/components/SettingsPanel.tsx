@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { canVibrate } from '@/lib/haptics';
 
 interface StatusResponse {
   founderName: string | null;
@@ -31,6 +32,14 @@ export function SettingsPanel({
   wakeWordEnabled,
   wakeWordSupported,
   onToggleWakeWord,
+  useGroqVoice,
+  onToggleGroqVoice,
+  continuous,
+  onToggleContinuous,
+  haptics,
+  onToggleHaptics,
+  legacyFacts,
+  onImportLegacy,
   hasMessages,
   onNewSession,
   onClose,
@@ -38,12 +47,21 @@ export function SettingsPanel({
   wakeWordEnabled: boolean;
   wakeWordSupported: boolean;
   onToggleWakeWord: () => void;
+  useGroqVoice: boolean;
+  onToggleGroqVoice: () => void;
+  continuous: boolean;
+  onToggleContinuous: () => void;
+  haptics: boolean;
+  onToggleHaptics: () => void;
+  legacyFacts: number;
+  onImportLegacy: () => void | Promise<void>;
   hasMessages: boolean;
   onNewSession: () => void;
   onClose: () => void;
 }) {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [loadError, setLoadError] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -88,13 +106,103 @@ export function SettingsPanel({
           <div className="settings-row">
             <span>Wake word</span>
             {wakeWordSupported ? (
-              <button type="button" onClick={onToggleWakeWord} className="settings-toggle">
-                {wakeWordEnabled ? 'ON' : 'OFF'}
+              <button
+                type="button"
+                onClick={onToggleWakeWord}
+                className="settings-toggle"
+                data-state={wakeWordEnabled ? 'on' : 'off'}
+                aria-pressed={wakeWordEnabled}
+              >
+                {wakeWordEnabled ? 'On' : 'Off'}
               </button>
             ) : (
               <span className="settings-toggle-disabled">unsupported</span>
             )}
           </div>
+          <div className="settings-row">
+            <span>
+              Conversation
+              <span className="settings-row-note">
+                {continuous
+                  ? 'Mic reopens after each reply'
+                  : 'One turn at a time — tap or call its name'}
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={onToggleContinuous}
+              className="settings-toggle"
+              data-state={continuous ? 'on' : 'off'}
+              aria-pressed={continuous}
+            >
+              {continuous ? 'On' : 'Off'}
+            </button>
+          </div>
+          <div className="settings-row">
+            <span>
+              Haptics
+              <span className="settings-row-note">
+                {canVibrate() ? 'Vibration on wake word, mic and replies' : 'No vibration hardware on this device'}
+              </span>
+            </span>
+            {canVibrate() ? (
+              <button
+                type="button"
+                onClick={onToggleHaptics}
+                className="settings-toggle"
+                data-state={haptics ? 'on' : 'off'}
+                aria-pressed={haptics}
+              >
+                {haptics ? 'On' : 'Off'}
+              </button>
+            ) : (
+              <span className="settings-toggle-disabled">unsupported</span>
+            )}
+          </div>
+          <div className="settings-row">
+            <span>
+              Premium voice
+              <span className="settings-row-note">
+                {useGroqVoice
+                  ? 'Groq Orpheus — better quality, ~3.6k tokens/day'
+                  : 'Browser voice — free and unlimited'}
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={onToggleGroqVoice}
+              className="settings-toggle"
+              data-state={useGroqVoice ? 'on' : 'off'}
+              aria-pressed={useGroqVoice}
+            >
+              {useGroqVoice ? 'On' : 'Off'}
+            </button>
+          </div>
+          {legacyFacts > 0 && (
+            <div className="settings-row">
+              <span>
+                Previous memory
+                <span className="settings-row-note">
+                  {legacyFacts} fact{legacyFacts === 1 ? '' : 's'} from before profiles existed
+                </span>
+              </span>
+              <button
+                type="button"
+                className="settings-toggle"
+                disabled={importing}
+                onClick={async () => {
+                  setImporting(true);
+                  try {
+                    await onImportLegacy();
+                  } finally {
+                    setImporting(false);
+                  }
+                }}
+              >
+                {importing ? '…' : 'Import'}
+              </button>
+            </div>
+          )}
           <div className="settings-row">
             <span>Session</span>
             <button
@@ -102,9 +210,9 @@ export function SettingsPanel({
               onClick={onNewSession}
               disabled={!hasMessages}
               className="settings-toggle"
-              style={{ opacity: hasMessages ? 1 : 0.35, cursor: hasMessages ? 'pointer' : 'default' }}
+              style={{ opacity: hasMessages ? 1 : 0.4, cursor: hasMessages ? 'pointer' : 'default' }}
             >
-              new
+              Clear
             </button>
           </div>
         </div>
