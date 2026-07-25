@@ -1155,6 +1155,77 @@ body {
   color: var(--band);
 }
 
+/* ── Install prompt ─────────────────────────────────────────── */
+
+@keyframes install-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* A row in the column, not a floating layer — so it makes room for itself
+   rather than sitting on top of the status text. */
+.install-prompt {
+  position: relative;
+  z-index: 40;
+  flex: 0 0 auto;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 16px 0;
+  max-width: min(440px, calc(100% - 32px));
+  padding: 10px 10px 10px 16px;
+  border-radius: 9999px;
+  background: rgba(28, 28, 28, 0.9);
+  border: 1px solid var(--band-hairline);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  animation: install-in 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.install-prompt-text {
+  font-size: 13px;
+  line-height: 18px;
+  color: rgba(255, 255, 255, 0.82);
+}
+.install-prompt-text strong {
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.install-prompt-cta {
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 9999px;
+  background: #ffffff;
+  color: var(--band);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.install-prompt-close {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  font-size: 16px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.install-prompt-close:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
 .settings-select {
   max-width: 46%;
   height: 28px;

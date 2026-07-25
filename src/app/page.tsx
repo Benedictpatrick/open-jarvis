@@ -7,6 +7,8 @@ import { ReactorHUD } from '@/components/ReactorHUD';
 import { InfoPanel } from '@/components/InfoPanel';
 import { SettingsPanel } from '@/components/SettingsPanel';
 import { HAPTICS, setHapticsEnabled, vibrate } from '@/lib/haptics';
+import { InstallPrompt } from '@/components/InstallPrompt';
+import { useInstallPrompt } from '@/lib/use-install-prompt';
 
 const INFO_PANEL_AUTO_DISMISS_MS = 15000;
 
@@ -75,6 +77,7 @@ function isSignOff(text: string): boolean {
 const WAKE_WORD_STORAGE_KEY = 'jarvis:wake-word';
 const CONTINUOUS_STORAGE_KEY = 'jarvis:continuous';
 const HAPTICS_STORAGE_KEY = 'jarvis:haptics';
+const INSTALL_DISMISSED_KEY = 'jarvis:install-dismissed';
 
 // Boot sequence — the reactor coming online before it settles into idle.
 const BOOT_LINES = [
@@ -508,6 +511,8 @@ export default function Home() {
   const [continuous, setContinuous] = useState(true);
   const [haptics, setHaptics] = useState(true);
   const [voiceName, setVoiceName] = useState<string | null>(null);
+  const [installDismissed, setInstallDismissed] = useState(true);
+  const { state: installState, install } = useInstallPrompt();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [liveCaption, setLiveCaption] = useState('');
   const [wakeWordHeard, setWakeWordHeard] = useState('');
@@ -553,6 +558,9 @@ export default function Home() {
       if (localStorage.getItem(WAKE_WORD_STORAGE_KEY) !== 'off') setWakeWordEnabled(true);
       if (localStorage.getItem(GROQ_VOICE_STORAGE_KEY) === 'on') setUseGroqVoice(true);
       if (localStorage.getItem(CONTINUOUS_STORAGE_KEY) === 'off') setContinuous(false);
+      // Starts hidden and is revealed only if it was never dismissed, so the
+      // offer can't flash on screen for someone who already said no.
+      if (localStorage.getItem(INSTALL_DISMISSED_KEY) !== 'yes') setInstallDismissed(false);
       const storedVoice = localStorage.getItem(VOICE_STORAGE_KEY);
       if (storedVoice) {
         setVoiceName(storedVoice);
@@ -564,6 +572,15 @@ export default function Home() {
       }
     } catch {
       // private mode / storage disabled — just leave it off
+    }
+  }, []);
+
+  const dismissInstall = useCallback(() => {
+    setInstallDismissed(true);
+    try {
+      localStorage.setItem(INSTALL_DISMISSED_KEY, 'yes');
+    } catch {
+      // ignore — it stays dismissed for this session either way
     }
   }, []);
 
@@ -1243,6 +1260,8 @@ export default function Home() {
           voiceName={voiceName}
           onChooseVoice={chooseVoice}
           listVoices={englishVoices}
+          installState={installState}
+          onInstall={() => void install()}
           legacyFacts={session?.legacyFacts ?? 0}
           onImportLegacy={async () => {
             const res = await fetch('/api/session', { method: 'POST' });
@@ -1269,6 +1288,16 @@ export default function Home() {
           </button>
         </div>
       </header>
+
+      {!booting && !installDismissed && (
+        <InstallPrompt
+          state={installState}
+          onInstall={() => {
+            void install().then(dismissInstall);
+          }}
+          onDismiss={dismissInstall}
+        />
+      )}
 
       <>
         {/* Status sits above the reactor rather than below it, so the sheet can

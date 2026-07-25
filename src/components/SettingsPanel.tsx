@@ -2,6 +2,14 @@
 
 import { useEffect, useState } from 'react';
 import { canVibrate } from '@/lib/haptics';
+import type { InstallState } from '@/lib/use-install-prompt';
+
+const INSTALL_NOTE: Record<InstallState, string> = {
+  installed: 'Running as an installed app',
+  available: 'Add Jarvis to your home screen',
+  'ios-manual': 'Tap Share, then Add to Home Screen',
+  unavailable: 'Not available in this browser',
+};
 
 interface StatusResponse {
   founderName: string | null;
@@ -41,6 +49,8 @@ export function SettingsPanel({
   voiceName,
   onChooseVoice,
   listVoices,
+  installState,
+  onInstall,
   legacyFacts,
   onImportLegacy,
   hasMessages,
@@ -59,6 +69,8 @@ export function SettingsPanel({
   voiceName: string | null;
   onChooseVoice: (name: string | null) => void;
   listVoices: () => SpeechSynthesisVoice[];
+  installState: InstallState;
+  onInstall: () => void;
   legacyFacts: number;
   onImportLegacy: () => void | Promise<void>;
   hasMessages: boolean;
@@ -243,6 +255,21 @@ export function SettingsPanel({
               </button>
             </div>
           )}
+          <div className="settings-row">
+            <span>
+              Install app
+              <span className="settings-row-note">{INSTALL_NOTE[installState]}</span>
+            </span>
+            {installState === 'available' ? (
+              <button type="button" onClick={onInstall} className="settings-toggle" data-state="on">
+                Install
+              </button>
+            ) : (
+              <span className="settings-toggle-disabled">
+                {installState === 'installed' ? 'installed' : '—'}
+              </span>
+            )}
+          </div>
           <div className="settings-row">
             <span>Session</span>
             <button
