@@ -32,8 +32,18 @@ const MAX_AUTO_RECORDING_MS = 15000;
 // separate "talking to Jarvis" from "television in the corner", so the gate
 // also demands the energy be *sustained*: passing chatter is bursty, a
 // deliberate follow-up is not.
-const SPEECH_THRESHOLD = 24;
-const MIN_VOICED_MS = 500;
+// Used to tell "they've started talking" from "the room is quiet", which
+// drives when the recording stops. Deliberately generous: being slow to
+// notice speech costs the user a real answer.
+const SPEECH_THRESHOLD = 16;
+const MIN_VOICED_MS = 240;
+
+// A far stricter bar, applied ONLY to the unattended follow-up window. That
+// is the one path where a false trigger becomes a runaway loop, so it has to
+// clear both a sustained duration and a genuine peak. A recording the user
+// deliberately started is never judged this way — they meant to speak.
+const FOLLOW_UP_MIN_VOICED_MS = 600;
+const FOLLOW_UP_MIN_PEAK = 30;
 // A hard stop on unattended turns. The gate reduces false triggers, it cannot
 // eliminate them, so a noisy room still must not be able to hold a
 // conversation with itself indefinitely.
@@ -311,7 +321,9 @@ const MIC_TICK_MS = 80;
  * amplitude every frame, which drives the reactor's core while recording. */
 function watchForSilence(
   stream: MediaStream,
-  onSilence: ((reason: 'spoke' | 'nothing-said') => void) | null,
+  /** Reports how much real speech the recording actually carried, so the
+   * caller can decide whether to transcribe it. */
+  onSilence: ((info: { hasSpoken: boolean; voicedMs: number; peak: number }) => void) | null,
   onLevel?: (level: number) => void,
   /** If set, give up this long after opening when nobody has said anything —
    * used to close an unanswered follow-up window instead of recording, and
@@ -328,6 +340,7 @@ function watchForSilence(
   const data = new Uint8Array(analyser.frequencyBinCount);
 
   let voicedMs = 0;
+  let peak = 0;
   let silenceStart: number | null = null;
   const startTime = Date.now();
   let stopped = false;
@@ -358,33 +371,25 @@ function watchForSilence(
 
     onLevel?.(Math.min(1, rms / MIC_LEVEL_CEILING));
 
+    if (rms > peak) peak = rms;
     if (rms > SPEECH_THRESHOLD) voicedMs += MIC_TICK_MS;
-    // Only sustained, loud-enough audio counts as somebody actually talking.
     const hasSpoken = voicedMs >= MIN_VOICED_MS;
 
     if (onSilence) {
+      const report = () => {
+        cleanup();
+        onSilence({ hasSpoken, voicedMs, peak });
+      };
+
       if (rms > SILENCE_THRESHOLD) {
         silenceStart = null;
       } else if (hasSpoken) {
         if (silenceStart === null) silenceStart = Date.now();
-        else if (Date.now() - silenceStart > SILENCE_HOLD_MS) {
-          cleanup();
-          onSilence('spoke');
-          return;
-        }
+        else if (Date.now() - silenceStart > SILENCE_HOLD_MS) return report();
       }
 
-      if (!hasSpoken && noSpeechMs !== undefined && Date.now() - startTime > noSpeechMs) {
-        cleanup();
-        onSilence('nothing-said');
-        return;
-      }
-
-      if (Date.now() - startTime > MAX_AUTO_RECORDING_MS) {
-        cleanup();
-        onSilence(hasSpoken ? 'spoke' : 'nothing-said');
-        return;
-      }
+      if (!hasSpoken && noSpeechMs !== undefined && Date.now() - startTime > noSpeechMs) return report();
+      if (Date.now() - startTime > MAX_AUTO_RECORDING_MS) return report();
     }
   };
 
@@ -881,7 +886,19 @@ export default function Home() {
         // property rather than React state — this fires every animation frame.
         silenceCleanupRef.current = watchForSilence(
           stream,
-          auto ? (reason) => stopRecording(reason === 'nothing-said') : null,
+          auto
+            ? (info) => {
+                // A recording the user started themselves is always sent for
+                // transcription — they meant to speak, and silently binning it
+                // is why Jarvis would listen and then never answer. Only the
+                // automatic follow-up window has to prove it heard real speech,
+                // because that is the path a false trigger can run away on.
+                const discard =
+                  isFollowUp &&
+                  (info.voicedMs < FOLLOW_UP_MIN_VOICED_MS || info.peak < FOLLOW_UP_MIN_PEAK);
+                stopRecording(discard);
+              }
+            : null,
           (level) => stageRef.current?.style.setProperty('--mic-level', level.toFixed(3)),
           // A follow-up window closes itself if the room stays quiet; a
           // deliberate activation waits for you.
